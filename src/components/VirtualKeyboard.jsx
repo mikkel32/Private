@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 
 const STANDARD_KEYS = [
     'q','w','e','r','t','y','u','i','o','p',
@@ -15,118 +15,171 @@ const PREALLOCATED_KEYS = STANDARD_KEYS.map(k => ({
     lBuf: PRECOMPUTED_ENCODER.encode(k),
     uBuf: PRECOMPUTED_ENCODER.encode(k.toUpperCase())
 }));
-
 const STATIC_SPACE_BUF = PRECOMPUTED_ENCODER.encode(" ");
+
+let sab = null;
+let sabView = null;
+try {
+    if (typeof SharedArrayBuffer !== 'undefined') {
+        sab = new SharedArrayBuffer(8192);
+        sabView = new DataView(sab);
+        if (window.electronAPI) window.electronAPI.initSAB(sab);
+    }
+} catch (e) {
+    console.warn("SAB Initialization failed, falling back to basic IPC");
+}
+
+const sendToC = (buffer) => {
+    if (sabView) {
+        sabView.setUint32(0, buffer.length, false);
+        for(let i=0; i<buffer.length; i++) {
+            sabView.setUint8(4 + i, buffer[i]);
+        }
+    } else if (window.electronAPI) {
+        window.electronAPI.appendBuffer(buffer);
+    }
+};
 
 const SHUFFLE = (array) => {
     const arr = [...array];
     for (let i = arr.length - 1; i > 0; i--) {
-        // High-entropy scramble
         const j = Math.floor(crypto.getRandomValues(new Uint32Array(1))[0] / 0xFFFFFFFF * (i + 1));
         [arr[i], arr[j]] = [arr[j], arr[i]];
     }
     return arr;
 };
 
-export default function VirtualKeyboard({ onKeyPress, onBackspace, onSpace, onEnter }) {
-    const [keys, setKeys] = useState([]);
-    const [isShift, setIsShift] = useState(false);
+// Layout constants
+const PADDING = 12;
+const KEY_W = 32;
+const KEY_H = 36;
+const GAP = 4;
+const WIDTH = 600;
+const HEIGHT = 200;
 
-    // Shuffle aggressively on every mount
-    useEffect(() => {
-        setKeys(SHUFFLE(PREALLOCATED_KEYS));
+export default function VirtualKeyboard({ onKeyPress, onBackspace, onSpace, onEnter }) {
+    const canvasRef = useRef(null);
+    const stateRef = useRef({ shift: false, hitBoxes: [] });
+
+    const redraw = useCallback(() => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        
+        ctx.fillStyle = 'rgba(0,0,0,0.85)';
+        ctx.fillRect(0, 0, WIDTH, HEIGHT);
+        
+        ctx.strokeStyle = '#333';
+        ctx.strokeRect(0, 0, WIDTH, HEIGHT);
+        
+        const keys = SHUFFLE(PREALLOCATED_KEYS);
+        const hitBoxes = [];
+        const isShift = stateRef.current.shift;
+
+        let x = PADDING;
+        let y = PADDING;
+        
+        ctx.font = '14px Arial';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        for (let k of keys) {
+            if (x + KEY_W > WIDTH - PADDING) {
+                x = PADDING;
+                y += KEY_H + GAP;
+            }
+            
+            ctx.fillStyle = '#1a1a24';
+            ctx.fillRect(x, y, KEY_W, KEY_H);
+            ctx.strokeStyle = '#444';
+            ctx.strokeRect(x, y, KEY_W, KEY_H);
+            
+            ctx.fillStyle = '#ccc';
+            const char = isShift ? k.u : k.l;
+            ctx.fillText(char, x + KEY_W/2, y + KEY_H/2);
+            
+            hitBoxes.push({ x, y, w: KEY_W, h: KEY_H, type: 'char', obj: k, char });
+            x += KEY_W + GAP;
+        }
+
+        y += KEY_H + GAP * 2;
+        x = PADDING;
+        
+        // Shift
+        ctx.fillStyle = isShift ? '#444' : '#222';
+        ctx.fillRect(x, y, 90, KEY_H);
+        ctx.fillStyle = '#fff';
+        ctx.fillText("⇧ SHIFT", x + 45, y + KEY_H/2);
+        hitBoxes.push({ x, y, w: 90, h: KEY_H, type: 'shift' });
+        x += 90 + GAP;
+        
+        // Space
+        ctx.fillStyle = '#222';
+        ctx.fillRect(x, y, 150, KEY_H);
+        hitBoxes.push({ x, y, w: 150, h: KEY_H, type: 'space' });
+        x += 150 + GAP;
+        
+        // Backspace
+        ctx.fillStyle = '#3a2020';
+        ctx.fillRect(x, y, 90, KEY_H);
+        ctx.fillStyle = '#ffaaaa';
+        ctx.fillText("⌫ BKSP", x + 45, y + KEY_H/2);
+        hitBoxes.push({ x, y, w: 90, h: KEY_H, type: 'bksp' });
+        x += 90 + GAP;
+        
+        // Enter
+        ctx.fillStyle = '#203a20';
+        ctx.fillRect(x, y, 90, KEY_H);
+        ctx.fillStyle = '#aaffaa';
+        ctx.fillText("⏎ ENTER", x + 45, y + KEY_H/2);
+        hitBoxes.push({ x, y, w: 90, h: KEY_H, type: 'enter' });
+
+        stateRef.current.hitBoxes = hitBoxes;
     }, []);
 
-    const handleKeyClick = useCallback((keyObj) => {
-        const finalChar = isShift ? keyObj.u : keyObj.l;
-        const buffer = isShift ? keyObj.uBuf : keyObj.lBuf;
-        if (window.electronAPI) {
-            window.electronAPI.appendBuffer(buffer);
-        }
-        onKeyPress(finalChar);
+    useEffect(() => {
+        redraw();
+    }, [redraw]);
+
+    const handleMouseDown = useCallback((e) => {
+        e.preventDefault();
+        const canvas = canvasRef.current;
+        const rect = canvas.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
         
-        // Shuffle everything again after each click to defeat mouse-tracking algorithms
-        setKeys(SHUFFLE(PREALLOCATED_KEYS));
-        setIsShift(false);
-    }, [isShift, onKeyPress]);
-
-    const handleSpace = useCallback(() => {
-        if (window.electronAPI) window.electronAPI.appendBuffer(STATIC_SPACE_BUF);
-        onSpace();
-        setKeys(SHUFFLE(PREALLOCATED_KEYS));
-    }, [onSpace]);
-
-    const handleBackspace = useCallback(() => {
-        if (window.electronAPI) window.electronAPI.backspace();
-        onBackspace();
-        setKeys(SHUFFLE(PREALLOCATED_KEYS));
-    }, [onBackspace]);
+        const boxes = stateRef.current.hitBoxes;
+        for (let box of boxes) {
+            if (mx >= box.x && mx <= box.x + box.w && my >= box.y && my <= box.y + box.h) {
+                if (box.type === 'char') {
+                    const buf = stateRef.current.shift ? box.obj.uBuf : box.obj.lBuf;
+                    sendToC(buf);
+                    onKeyPress(box.char);
+                    stateRef.current.shift = false;
+                } else if (box.type === 'shift') {
+                    stateRef.current.shift = !stateRef.current.shift;
+                } else if (box.type === 'space') {
+                    sendToC(STATIC_SPACE_BUF);
+                    onSpace();
+                } else if (box.type === 'bksp') {
+                    if (window.electronAPI) window.electronAPI.backspace();
+                    onBackspace();
+                } else if (box.type === 'enter') {
+                    onEnter();
+                }
+                redraw();
+                break;
+            }
+        }
+    }, [redraw, onKeyPress, onSpace, onBackspace, onEnter]);
 
     return (
-        <div style={{
-            background: 'rgba(0,0,0,0.85)',
-            border: '1px solid #333',
-            borderRadius: '8px',
-            padding: '12px',
-            userSelect: 'none',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '8px',
-            width: '100%',
-            maxWidth: '600px',
-            backdropFilter: 'blur(10px)',
-            pointerEvents: 'auto'
-        }}>
-            <div style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                gap: '4px',
-                justifyContent: 'center'
-            }}>
-                {keys.map((kObj, i) => (
-                    <button
-                        key={`${kObj.l}-${i}`}
-                        onMouseDown={(e) => { e.preventDefault(); handleKeyClick(kObj); }} // use onMouseDown to bypass focus loss
-                        style={{
-                            width: '32px',
-                            height: '36px',
-                            background: '#1a1a24',
-                            border: '1px solid #444',
-                            color: '#ccc',
-                            borderRadius: '4px',
-                            cursor: 'pointer',
-                            fontSize: '14px',
-                            textTransform: 'none' // Removed dynamic css transform mapping
-                        }}
-                    >
-                        {isShift ? kObj.u : kObj.l}
-                    </button>
-                ))}
-            </div>
-            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
-                <button
-                    onMouseDown={(e) => { e.preventDefault(); setIsShift(!isShift); setKeys(SHUFFLE(PREALLOCATED_KEYS)); }}
-                    style={{ padding: '8px 16px', background: isShift ? '#444' : '#222', border: '1px solid #555', color: '#fff', borderRadius: '4px', cursor: 'pointer' }}
-                >
-                    ⇧ SHIFT
-                </button>
-                <button
-                    onMouseDown={(e) => { e.preventDefault(); handleSpace(); }}
-                    style={{ flex: 1, height: '36px', background: '#222', border: '1px solid #555', borderRadius: '4px', cursor: 'pointer' }}
-                />
-                <button
-                    onMouseDown={(e) => { e.preventDefault(); handleBackspace(); }}
-                    style={{ padding: '8px 16px', background: '#3a2020', border: '1px solid #633', color: '#ffaaaa', borderRadius: '4px', cursor: 'pointer' }}
-                >
-                    ⌫ BKSP
-                </button>
-                <button
-                    onMouseDown={(e) => { e.preventDefault(); onEnter(); }}
-                    style={{ padding: '8px 16px', background: '#203a20', border: '1px solid #363', color: '#aaffaa', borderRadius: '4px', cursor: 'pointer' }}
-                >
-                    ⏎ ENTER
-                </button>
-            </div>
-        </div>
+        <canvas 
+            ref={canvasRef}
+            width={WIDTH}
+            height={HEIGHT}
+            onMouseDown={handleMouseDown}
+            style={{ borderRadius: '8px', cursor: 'crosshair', filter: 'drop-shadow(0 4px 12px rgba(0,0,0,0.5))' }}
+        />
     );
 }

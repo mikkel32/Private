@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   offSecureKeyTick: () => ipcRenderer.removeAllListeners("secure-key-tick"),
   enableSecureInput: () => ipcRenderer.send("secure-enable"),
   disableSecureInput: () => ipcRenderer.send("secure-disable"),
+  initSAB: (sab) => ipcRenderer.send("secure-init-sab", sab),
   appendBuffer: (buffer) => ipcRenderer.send("secure-append", buffer),
   backspace: () => ipcRenderer.send("secure-backspace"),
   wipeVault: () => ipcRenderer.send("secure-wipe"),

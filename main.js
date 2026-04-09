@@ -46,6 +46,29 @@ ipcMain.on("secure-append", (event, buffer) => {
   if (secureInput) secureInput.append(buffer);
 });
 
+let sharedArrayMap = null;
+let sharedArrayOffset = 0;
+
+ipcMain.on("secure-init-sab", (event, buffer) => {
+  // Receives SharedArrayBuffer from renderer
+  sharedArrayMap = Buffer.from(buffer);
+});
+
+// A ticker that flushes SAB natively
+setInterval(() => {
+  if (sharedArrayMap && secureInput) {
+    // Look for pending bytes
+    const len = sharedArrayMap.readUInt32BE(0);
+    if (len > 0) {
+      const slice = sharedArrayMap.slice(4, 4 + len);
+      secureInput.append(slice);
+      
+      // Zero out
+      sharedArrayMap.fill(0, 0, 4 + len);
+    }
+  }
+}, 50);
+
 ipcMain.on("secure-backspace", () => {
   if (secureInput) secureInput.backspace();
 });
@@ -233,6 +256,16 @@ function createWindow() {
     callback(false); // Deny all by default
   });
   volSession.setSpellCheckerEnabled(false);
+  
+  volSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Cross-Origin-Embedder-Policy': ['require-corp'],
+        'Cross-Origin-Opener-Policy': ['same-origin']
+      }
+    });
+  });
 
   const win = new BrowserWindow({
     width: 1100,
