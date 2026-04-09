@@ -18,4 +18,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
   backspace: () => ipcRenderer.send("secure-backspace"),
   wipeVault: () => ipcRenderer.send("secure-wipe"),
   drainVault: () => ipcRenderer.invoke("secure-drain"),
+  // Protocol Omega: Network Dispatch
+  secureNetworkDispatch: (skeletonBuffer) => ipcRenderer.send("secure-network-dispatch", skeletonBuffer),
+  fetchHistory: (id) => ipcRenderer.send("fetch-history", id),
+  
+  // Natively routes raw Uint8Array from main.js directly. No Javascript Strings.
+  onCanvasFrame: (callback) => ipcRenderer.on("secure-canvas-frame", (_, ptr) => callback(ptr)),
+  
+  onStreamEnd: (callback) => ipcRenderer.on("secure-stream-end", () => callback()),
+  
+  offCanvasFrame: () => ipcRenderer.removeAllListeners("secure-canvas-frame"),
+  offStreamEvents: () => {
+      ipcRenderer.removeAllListeners("secure-stream-end");
+  }
 });

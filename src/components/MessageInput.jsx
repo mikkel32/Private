@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import VirtualKeyboard from "./VirtualKeyboard.jsx";
 
 /**
  * MessageInput — Auto-resizing textarea with send/stop controls
@@ -11,6 +12,7 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
   // The characters themselves are physically residing inside the macOS C++ compilation.
   // The frontend only tracks how many dots to render. V8 never aggregates the Strings.
   const [vaultLength, setVaultLength] = useState(0);
+  const [ghostMode, setGhostMode] = useState(false);
 
   const resize = useCallback(() => {
     // We use standard input element size here
@@ -27,17 +29,20 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
 
   const handleKeyDown = useCallback(
     async (e) => {
+      // If Ghost Protocol is active, physical keyboard is entirely disabled
+      if (ghostMode) {
+          e.preventDefault();
+          return;
+      }
+
       // Forebyg DOM vha. preventDefault så Blink/V8 Strings aldrig allokeres til `value`.
       e.preventDefault();
 
       if (e.key === "Enter" && !e.shiftKey) {
         if (vaultLength > 0 && !isStreaming && !disabled) {
-          const bufferPayload = await window.electronAPI.drainVault();
-          if (bufferPayload && bufferPayload.byteLength > 0) {
-              const text = new TextDecoder().decode(bufferPayload);
-              onSend(text);
-          }
-          wipeMemory();
+          // Send signal to App.jsx to construct the JSON layout, 
+          // do NOT drain vault to JS Strings.
+          onSend("");
         }
       } else if (e.key === "Backspace") {
         window.electronAPI.backspace();
@@ -49,7 +54,7 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
         setVaultLength(l => l + 1);
       }
     },
-    [isStreaming, disabled, onSend, wipeMemory, vaultLength]
+    [isStreaming, disabled, onSend, wipeMemory, vaultLength, ghostMode]
   );
   const handleFocus = useCallback(() => {
     window.electronAPI.enableSecureInput();
@@ -64,20 +69,29 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
       onStop();
     } else {
       if (vaultLength > 0 && !disabled) {
-        const bufferPayload = await window.electronAPI.drainVault();
-        if (bufferPayload && bufferPayload.byteLength > 0) {
-            const text = new TextDecoder().decode(bufferPayload);
-            onSend(text);
-        }
-        wipeMemory();
+          onSend("");
       }
     }
-  }, [isStreaming, disabled, onSend, onStop, wipeMemory, vaultLength]);
+  }, [isStreaming, disabled, onSend, onStop, vaultLength]);
 
   const previewText = "●".repeat(vaultLength);
 
   return (
-    <div className="input-area">
+    <div className="input-area" style={{ position: 'relative' }}>
+      {ghostMode && (
+          <div style={{ position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)', marginBottom: '8px', zIndex: 10 }}>
+              <VirtualKeyboard 
+                  onKeyPress={() => setVaultLength(l => l + 1)} 
+                  onBackspace={() => setVaultLength(l => Math.max(0, l - 1))} 
+                  onSpace={() => setVaultLength(l => l + 1)}
+                  onEnter={() => {
+                      if (vaultLength > 0 && !disabled && !isStreaming) {
+                          onSend("");
+                      }
+                  }}
+              />
+          </div>
+      )}
       <div className="input-container">
         <div className="input-wrapper">
           <div className="secure-input-wrapper" style={{ position: 'relative', flex: 1, minHeight: '44px' }}>
@@ -125,15 +139,30 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
                 pointerEvents: 'none',
                 fontFamily: 'inherit',
                 fontSize: '15px',
-                color: text ? '#eee' : '#555',
+                color: vaultLength > 0 ? '#eee' : '#555',
                 zIndex: 1,
                 whiteSpace: 'nowrap',
                 overflow: 'hidden'
               }}
             >
-              {previewText ? previewText : (disabled ? "Waiting for server…" : "Secure isolated input…")}
+              {previewText ? previewText : (disabled ? "Waiting for server…" : (ghostMode ? "Ghost Protocol Active..."  : "Secure isolated input…"))}
             </div>
           </div>
+          <button
+              onClick={() => setGhostMode(m => !m)}
+              title="Toggle Ghost Protocol (OSK)"
+              style={{
+                  background: ghostMode ? '#4caf50' : 'transparent',
+                  border: '1px solid #444',
+                  color: ghostMode ? '#000' : '#888',
+                  padding: '0 12px',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  marginRight: '8px'
+              }}
+          >
+              👻
+          </button>
           <button
             className="send-btn"
             onClick={handleSendClick}

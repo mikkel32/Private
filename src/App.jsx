@@ -14,40 +14,12 @@ function uid() {
 function createConversation() {
   return {
     id: uid(),
-    title: "New chat",
-    messages: [],
+    title: "Secure Session",
     createdAt: Date.now(),
   };
 }
 
-/**
- * Parse Gemma 4 thinking blocks from raw text.
- * The model emits reasoning inside <|channel>thought\n...\n<channel|> tags.
- * Returns { thinking: string|null, response: string }
- */
-function parseThinking(raw) {
-  const thinkStartTag = "<|channel>thought";
-  const thinkEndTag = "<channel|>";
-
-  const startIdx = raw.indexOf(thinkStartTag);
-  if (startIdx === -1) {
-    return { thinking: null, response: raw };
-  }
-
-  const afterStart = startIdx + thinkStartTag.length;
-  const endIdx = raw.indexOf(thinkEndTag, afterStart);
-
-  if (endIdx === -1) {
-    // Still streaming thinking content
-    const thinkContent = raw.slice(afterStart).replace(/^\n/, "");
-    return { thinking: thinkContent, response: "" };
-  }
-
-  const thinkContent = raw.slice(afterStart, endIdx).replace(/^\n/, "").replace(/\n$/, "");
-  const response = raw.slice(endIdx + thinkEndTag.length).replace(/^\n/, "");
-
-  return { thinking: thinkContent, response };
-}
+// String Parsing Banned - Ghost Protocol V2 Active
 
 export default function App() {
   const [conversations, setConversations] = useState(() => {
@@ -101,6 +73,12 @@ export default function App() {
     return () => clearInterval(interval);
   }, [checkHealth]);
 
+  useEffect(() => {
+    if (serverOnline && activeId && !isStreaming) {
+       window.electronAPI.fetchHistory(activeId);
+    }
+  }, [activeId, serverOnline, isStreaming]);
+
   const activeConversation = conversations.find((c) => c.id === activeId) || conversations[0];
 
   const updateConversation = useCallback((id, updater) => {
@@ -129,29 +107,10 @@ export default function App() {
 
   const handleSend = useCallback(
     async (text) => {
-      if (!text.trim() || isStreaming) return;
+      if (isStreaming) return;
 
-      const userMessage = { role: "user", content: text.trim() };
+      const userMessage = { role: "user", content: "<|SECURE_INJECT|>" };
       const convId = activeId;
-
-      // Append user message
-      updateConversation(convId, (c) => {
-        const updated = { ...c, messages: [...c.messages, userMessage] };
-        if (c.messages.length === 0) {
-          updated.title = text.trim().slice(0, 50) + (text.length > 50 ? "…" : "");
-        }
-        return updated;
-      });
-
-      // Assistant placeholder
-      const assistantId = uid();
-      updateConversation(convId, (c) => ({
-        ...c,
-        messages: [
-          ...c.messages,
-          { role: "assistant", content: "", _id: assistantId, _raw: "" },
-        ],
-      }));
 
       setIsStreaming(true);
       setLastTimings(null);
@@ -159,22 +118,9 @@ export default function App() {
       abortRef.current = controller;
 
       try {
-        const currentConv = conversations.find((c) => c.id === convId);
-        // Build messages — strip _id, _raw, and any parsed thinking from history
-        const allMessages = [
-          ...currentConv.messages,
-          userMessage,
-        ].map(({ role, content, _raw }) => {
-          // For assistant messages that had thinking, only send the response part
-          if (role === "assistant" && _raw) {
-            const { response } = parseThinking(_raw);
-            return { role, content: response || content };
-          }
-          return { role, content };
-        });
-
         const payloadObj = {
-          messages: allMessages,
+          conversation_id: convId,
+          message: userMessage,
           stream: true,
           max_tokens: settings.maxTokens,
           temperature: settings.temperature,
@@ -183,82 +129,28 @@ export default function App() {
           thinking_budget: settings.thinkingBudget,
         };
 
-        const res = await fetch(`${API_URL}/v1/chat/completions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payloadObj),
-          signal: controller.signal,
+        const jsonString = JSON.stringify(payloadObj);
+        const skeletonBuffer = new TextEncoder().encode(jsonString);
+
+        window.electronAPI.offStreamEvents();
+
+        window.electronAPI.onStreamEnd(() => {
+           window.electronAPI.wipeVault();
+           setIsStreaming(false);
+           abortRef.current = null;
+           checkHealth();
+           window.electronAPI.offStreamEvents();
         });
 
-        if (!res.ok) throw new Error(`Server error: ${res.status}`);
+        window.electronAPI.secureNetworkDispatch(skeletonBuffer);
 
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const lines = buffer.split("\n");
-          buffer = lines.pop() || "";
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith("data: ")) continue;
-            const data = trimmed.slice(6);
-            if (data === "[DONE]") break;
-
-            try {
-              const parsed = JSON.parse(data);
-
-              // Handle timings chunk
-              if (parsed.object === "chat.completion.timings") {
-                setLastTimings(parsed.timings);
-                continue;
-              }
-
-              const token = parsed.choices?.[0]?.delta?.content || "";
-              if (token) {
-                updateConversation(convId, (c) => ({
-                  ...c,
-                  messages: c.messages.map((m) => {
-                    if (m._id !== assistantId) return m;
-                    const newRaw = (m._raw || "") + token;
-                    const { thinking, response } = parseThinking(newRaw);
-                    return {
-                      ...m,
-                      _raw: newRaw,
-                      content: response || "",
-                      _thinking: thinking,
-                    };
-                  }),
-                }));
-              }
-            } catch {
-              // Skip malformed chunks
-            }
-          }
-        }
       } catch (err) {
-        if (err.name !== "AbortError") {
-          updateConversation(convId, (c) => ({
-            ...c,
-            messages: c.messages.map((m) =>
-              m._id === assistantId
-                ? { ...m, content: m.content || `⚠️ Error: ${err.message}` }
-                : m
-            ),
-          }));
-        }
-      } finally {
         setIsStreaming(false);
         abortRef.current = null;
-        checkHealth();
+        console.error("Transmission failed", err);
       }
     },
-    [activeId, isStreaming, conversations, updateConversation, checkHealth, settings]
+    [activeId, isStreaming, checkHealth, settings]
   );
 
   const handleStop = useCallback(() => {
@@ -284,10 +176,7 @@ export default function App() {
           isStreaming={isStreaming}
           serverInfo={serverInfo}
         />
-        <ChatWindow
-          messages={activeConversation.messages}
-          isStreaming={isStreaming}
-        />
+        <ChatWindow />
         <MessageInput
           onSend={handleSend}
           onStop={handleStop}

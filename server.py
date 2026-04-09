@@ -29,6 +29,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from llama_cpp import Llama
+from secure_memory import vault
+from image_renderer import render_chat_history
 
 # ── Configuration ────────────────────────────────────────────────────────────
 
@@ -318,6 +320,103 @@ async def chat_completions(request: Request):
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+@app.get("/v1/chat/render/{conversation_id}")
+async def get_chat_render(conversation_id: str):
+    history = vault.get_history(conversation_id)
+    if not history:
+        history = [{"role": "system", "content": "Start a new secure session."}]
+    png_bytes = render_chat_history(history, "")
+    length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
+    return StreamingResponse(
+        iter([length_prefix + png_bytes]),
+        media_type="application/octet-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+@app.post("/v1/chat/stream_canvas")
+async def stream_canvas(request: Request):
+    """
+    Project Monolith: Binary Raster Streaming.
+    Dumps all strings across IPC. Exclusively emits `Uint8Array` binary blocks containing complete PNG frames
+    for direct HTML5 <canvas> instantiation to avoid V8 Memory Leaks.
+    """
+    # Using JSON loads only in Python backend!
+    body = await request.json()
+    conv_id = body.get("conversation_id", "default")
+    new_message = body.get("message", None)  # {"role": "user", "content": "hello"}
+    
+    # Securely append to Mlocked vault!
+    history = vault.get_history(conv_id)
+    if not history and new_message:
+         history = [
+             {"role": "system", "content": "You are a secure assistant. Respond clearly."}
+         ]
+    if new_message:
+         history.append(new_message)
+         vault.set_history(conv_id, history)
+    
+    enable_thinking = body.get("enable_thinking", True)
+    thinking_budget = body.get("thinking_budget", 1024)
+    processed_messages = inject_thinking(history, enable_thinking, thinking_budget)
+    
+    model = get_model()
+    
+    async def generate_binary() -> AsyncGenerator[bytes, None]:
+        response_stream = model.create_chat_completion(
+            messages=processed_messages,
+            max_tokens=2048,
+            temperature=0.7,
+            top_p=0.9,
+            stream=True,
+        )
+
+        full_content = ""
+        last_yield_time = time.time()
+        
+        try:
+            for chunk in response_stream:
+                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                content = delta.get("content", "")
+                if content:
+                    full_content += content
+                    
+                    # Target roughly 5 FPS visual refresh to save CPU/Bandwidth (yield every 0.2s)
+                    if time.time() - last_yield_time > 0.2:
+                        png_bytes = render_chat_history(history, full_content)
+                        length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
+                        yield length_prefix + png_bytes
+                        last_yield_time = time.time()
+            
+            # Final frame render!
+            if full_content:
+                png_bytes = render_chat_history(history, full_content)
+                length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
+                yield length_prefix + png_bytes
+                
+                # Append to secure vault
+                history.append({"role": "assistant", "content": full_content})
+                vault.set_history(conv_id, history)
+            
+        except Exception as e:
+            full_content += f"\n\n[System Error: {str(e)}]"
+            png_bytes = render_chat_history(history, full_content)
+            length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
+            yield length_prefix + png_bytes
+
+    return StreamingResponse(
+        generate_binary(),
+        media_type="application/octet-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",

@@ -6,7 +6,7 @@
  * In production, loads the built dist/index.html.
  */
 
-const { app, BrowserWindow, shell, ipcMain } = require("electron");
+const { app, BrowserWindow, ipcMain, net } = require("electron");
 const path = require("path");
 const fs = require("fs");
 
@@ -33,6 +33,7 @@ app.commandLine.appendSwitch("disable-background-networking");
 app.commandLine.appendSwitch("disable-default-apps");
 app.commandLine.appendSwitch("disable-dev-shm-usage"); // Prevent sharing memory with OS
 app.commandLine.appendSwitch("ignore-certificate-errors", "true"); // Allow volatile self-signed local certs
+app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp"); // Defeat WebRTC IP leaks
 
 // IPC Routers for Native C++ Proxy
 ipcMain.on("secure-enable", () => {
@@ -59,6 +60,132 @@ ipcMain.handle("secure-drain", async () => {
   return secureInput.drain(); 
 });
 
+// Protocol Omega: Remote Splice and Dispatch
+ipcMain.on("secure-network-dispatch", (event, skeletonBuffer) => {
+  fs.appendFileSync("ipc-debug.log", "Received secure-network-dispatch\n");
+  if (!secureInput) return fs.appendFileSync("ipc-debug.log", "secureInput is null\n");
+
+  try {
+    fs.appendFileSync("ipc-debug.log", `Attempting to drain...\n`);
+    const rawSecretBuffer = secureInput.drain(); 
+    if (!rawSecretBuffer) return fs.appendFileSync("ipc-debug.log", `rawSecretBuffer is empty\n`);
+
+    // Buffer is a Node primitive, it avoids V8 Immutable String generation
+    const skeleton = Buffer.from(skeletonBuffer);
+    const secret = Buffer.from(rawSecretBuffer);
+
+    fs.appendFileSync("ipc-debug.log", `Skeleton length: ${skeleton.length}, Secret length: ${secret.length}\n`);
+
+    const anchorText = "<|SECURE_INJECT|>";
+    const index = skeleton.indexOf(anchorText);
+
+    if (index !== -1) {
+      const part1 = skeleton.slice(0, index);
+      const part2 = skeleton.slice(index + anchorText.length);
+      const finalPayload = Buffer.concat([part1, secret, part2]);
+
+      fs.appendFileSync("ipc-debug.log", `Payload constructed. Sending POST request to backend...\n`);
+
+      const req = net.request({
+        url: "https://127.0.0.1:8420/v1/chat/stream_canvas",
+        method: 'POST',
+      });
+      req.setHeader('Content-Type', 'application/json');
+      
+      req.on('response', (res) => {
+        fs.appendFileSync("ipc-debug.log", `stream_canvas response: ${res.statusCode}\n`);
+        if (res.statusCode !== 200) {
+          res.on('data', d => fs.appendFileSync("ipc-debug.log", `stream_canvas ERROR: ${d}\n`));
+          return event.sender.send("secure-stream-end");
+        }
+        let currentBuffer = Buffer.alloc(0);
+        
+        res.on('data', (chunk) => {
+           currentBuffer = Buffer.concat([currentBuffer, chunk]);
+           
+           // Extract PNG chunks natively in C++ via Buffer length parsing
+           while (currentBuffer.length >= 4) {
+               const len = currentBuffer.readUInt32BE(0);
+               if (currentBuffer.length >= 4 + len) {
+                   const pngData = currentBuffer.slice(4, 4 + len);
+                   currentBuffer = currentBuffer.slice(4 + len);
+                   // Fire raw Uint8Array over IPC boundary directly to Canvas API
+                   event.sender.send("secure-canvas-frame", pngData);
+               } else {
+                   break;
+               }
+           }
+        });
+        res.on('end', () => {
+           event.sender.send("secure-stream-end");
+        });
+        res.on('error', (err) => {
+           console.error("Stream Error", err);
+           event.sender.send("secure-stream-end");
+        });
+      });
+
+      req.on('error', (err) => {
+        fs.appendFileSync("ipc-debug.log", `stream_canvas NETWORK ERROR: ${err}\n`);
+        console.error("Network Error", err);
+        event.sender.send("secure-stream-end");
+      });
+
+      req.end(finalPayload);
+
+      // Natively wipe completely before passing control back to GC
+      finalPayload.fill(0);
+      skeleton.fill(0);
+      part1.fill(0);
+      part2.fill(0);
+      secret.fill(0);
+    }
+  } catch (err) {
+    fs.appendFileSync("ipc-debug.log", `Splice error: ${err}\n`);
+    console.error("Splice error:", err);
+  }
+});
+
+ipcMain.on("fetch-history", (event, id) => {
+  const targetUrl = `https://127.0.0.1:8420/v1/chat/render/${id}`;
+  fs.appendFileSync("ipc-debug.log", `Issuing fetch-history to: ${targetUrl}\n`);
+  const req = net.request({
+    url: targetUrl,
+    method: 'GET'
+  });
+  
+  req.on('response', (res) => {
+    fs.appendFileSync("ipc-debug.log", `fetch-history response: ${res.statusCode}\n`);
+    if (res.statusCode !== 200) {
+      res.on('data', d => fs.appendFileSync("ipc-debug.log", `fetch-history ERROR: ${d}\n`));
+      return;
+    }
+    let currentBuffer = Buffer.alloc(0);
+    res.on('data', (chunk) => {
+       currentBuffer = Buffer.concat([currentBuffer, chunk]);
+       while (currentBuffer.length >= 4) {
+           const len = currentBuffer.readUInt32BE(0);
+           if (currentBuffer.length >= 4 + len) {
+               const pngData = currentBuffer.slice(4, 4 + len);
+               currentBuffer = currentBuffer.slice(4 + len);
+               event.sender.send("secure-canvas-frame", pngData);
+           } else {
+               break;
+           }
+       }
+    });
+
+    res.on('end', () => {
+       event.sender.send("secure-stream-end");
+    });
+  });
+  req.on('error', (err) => {
+      fs.appendFileSync("ipc-debug.log", `fetch-history NETWORK ERROR: ${err}\n`);
+      console.error("History fetch error:", err);
+  });
+  req.end();
+});
+
 function createWindow() {
   const { session } = require('electron');
   
@@ -68,7 +195,6 @@ function createWindow() {
     callback(false); // Deny all by default
   });
   volSession.setSpellCheckerEnabled(false);
-  volSession.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
 
   const win = new BrowserWindow({
     width: 1100,
