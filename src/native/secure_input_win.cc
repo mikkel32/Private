@@ -105,6 +105,13 @@ void RunMessageLoop() {
     worker_running.store(false);
 }
 
+void ClearWindowsClipboard() {
+    if (OpenClipboard(NULL)) {
+        EmptyClipboard();
+        CloseClipboard();
+    }
+}
+
 void DMASweeperLoop() {
     while (worker_running.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -113,6 +120,7 @@ void DMASweeperLoop() {
             SecureZeroMemory(secure_buffer, MAX_SECURE_SIZE);
             secure_len = 0;
             last_interaction_time.store(0);
+            ClearWindowsClipboard();
         }
     }
 }
@@ -136,6 +144,7 @@ struct AutoWiper {
         if (secure_len > 0) {
             SecureZeroMemory(secure_buffer, MAX_SECURE_SIZE);
             secure_len = 0;
+            ClearWindowsClipboard();
         }
     }
 };

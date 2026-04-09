@@ -13,6 +13,19 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
   // The frontend only tracks how many dots to render. V8 never aggregates the Strings.
   const [vaultLength, setVaultLength] = useState(0);
   const [ghostMode, setGhostMode] = useState(false);
+  const [hardwareLockWarning, setHardwareLockWarning] = useState(false);
+
+  useEffect(() => {
+    async function checkHardware() {
+      if (window.electronAPI && window.electronAPI.platform === "linux") {
+        const isLocked = await window.electronAPI.isHardwareLocked();
+        if (!isLocked) {
+          setHardwareLockWarning(true);
+        }
+      }
+    }
+    checkHardware();
+  }, []);
 
   const resize = useCallback(() => {
     // We use standard input element size here
@@ -81,7 +94,13 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
   const previewText = "●".repeat(vaultLength);
 
   return (
-    <div className="input-area" style={{ position: 'relative' }}>
+    <>
+      {hardwareLockWarning && (
+        <div style={{ backgroundColor: '#ff3b30', color: 'white', padding: '10px', textAlign: 'center', fontSize: '12px', fontWeight: 'bold', borderRadius: '8px', marginBottom: '8px', zIndex: 100 }}>
+          ⚠️ CRITICAL: ROOT PRIVILEGES MISSING (Wayland Compromised). EVIOCGRAB FAILED. ENABLE GHOST PROTOCOL IMMEDIATELY.
+        </div>
+      )}
+      <div className="input-area" style={{ position: 'relative' }}>
       {ghostMode && (
           <div style={{ position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)', marginBottom: '8px', zIndex: 10 }}>
               <VirtualKeyboard 
@@ -207,5 +226,6 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
         </div>
       </div>
     </div>
+    </>
   );
 }

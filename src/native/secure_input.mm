@@ -166,11 +166,13 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
 
 Napi::Value EnableProtection(const Napi::CallbackInfo& info) {
     tap_active.store(true);
+    EnableSecureEventInput();
     return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value DisableProtection(const Napi::CallbackInfo& info) {
     tap_active.store(false);
+    DisableSecureEventInput();
     return Napi::Boolean::New(info.Env(), true);
 }
 

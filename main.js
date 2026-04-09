@@ -62,6 +62,13 @@ app.on('certificate-error', (event, webContents, url, error, certificate, callba
 app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp"); // Defeat WebRTC IP leaks
 
 // IPC Routers for Native C++ Proxy
+ipcMain.handle("secure-check-hardware", () => {
+  if (secureInput && secureInput.isHardwareLocked) {
+    return secureInput.isHardwareLocked();
+  }
+  return false;
+});
+
 ipcMain.on("secure-enable", () => {
   if (secureInput) secureInput.enableSecureInput();
 });
