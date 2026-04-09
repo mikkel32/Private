@@ -1,2 +1,58 @@
-gemma-4-E4B-it-heretic-Q5_K_M.gguf
-/node_modules
+# Node & Vite
+node_modules/
+dist/
+dist-electron/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Environment & Local Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+
+# Machine Learning Models
+*.gguf
+*.bin
+*.model
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS & Application Caches
+*.log
+.eslintcache
+.DS_Store
+.DS_Store
