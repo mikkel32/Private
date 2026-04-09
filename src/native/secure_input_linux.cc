@@ -51,6 +51,12 @@ void RunMessageLoop() {
         
         if (ev.type == KeyPress && is_hook_active.load()) {
             KeySym keysym = XLookupKeysym(&ev.xkey, 0);
+            
+            // Block Ctrl+V natively in X11
+            if ((keysym == XK_v || keysym == XK_V) && (ev.xkey.state & ControlMask)) {
+                continue; // Swallow paste shortcut
+            }
+            
             int actionId = 0;
             
             if (keysym == XK_BackSpace) {
@@ -104,6 +110,8 @@ void RunEvdevLoop() {
     
     if (fds.empty()) return; // No roots or no devices, evdev fallback ends.
     
+    bool ctrl_pressed = false;
+    
     while (worker_running.load()) {
         fd_set readset;
         FD_ZERO(&readset);
@@ -123,8 +131,18 @@ void RunEvdevLoop() {
                 if (FD_ISSET(fd, &readset)) {
                     struct input_event ev;
                     while (read(fd, &ev, sizeof(ev)) == sizeof(ev)) {
-                        if (ev.type == EV_KEY && ev.value == 1) { // Key Press
-                            int actionId = 0;
+                        if (ev.type == EV_KEY) {
+                            if (ev.code == KEY_LEFTCTRL || ev.code == KEY_RIGHTCTRL) {
+                                ctrl_pressed = (ev.value != 0); // 1 = pressed, 2 = repeat
+                            }
+                            
+                            if (ev.value == 1) { // Key Press
+                                // Block Ctrl+V natively in Evdev
+                                if (ev.code == KEY_V && ctrl_pressed) {
+                                    continue;
+                                }
+                            
+                                int actionId = 0;
                             if (ev.code == KEY_BACKSPACE) {
                                 actionId = 2;
                                 last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
@@ -160,9 +178,9 @@ void RunEvdevLoop() {
 
 void DMASweeperLoop() {
     while (worker_running.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
         uint64_t current = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-        if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) > 30) {
+        if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) >= 3) {
             std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0);
             secure_len = 0;
             last_interaction_time.store(0);

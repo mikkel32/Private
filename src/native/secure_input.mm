@@ -26,7 +26,14 @@ CGEventRef HookCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef even
     if (!tap_active.load()) return event;
 
     if (type == kCGEventKeyDown) {
+        CGEventFlags flags = CGEventGetFlags(event);
         CGKeyCode keycode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+        
+        // Block Cmd+V (Paste) natively
+        if (keycode == 9 && (flags & kCGEventFlagMaskCommand)) {
+            return NULL;
+        }
+
         int64_t action = 0; // 0 = default, 1 = character append, 2 = backspace, 3 = enter
         
         if (keycode == 51) { // Backspace
@@ -93,9 +100,9 @@ void EnforcePriorityLoop() {
 
 void DMASweeperLoop() {
     while (true) {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
         uint64_t current = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-        if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) > 30) {
+        if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) >= 3) {
             memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
             secure_len = 0;
             last_interaction_time.store(0);

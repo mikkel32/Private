@@ -25,6 +25,11 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             KBDLLHOOKSTRUCT* pKeyBoard = (KBDLLHOOKSTRUCT*)lParam;
             DWORD vkCode = pKeyBoard->vkCode;
             
+            // Block Ctrl+V (Paste) natively
+            if (vkCode == 0x56 && (GetAsyncKeyState(VK_CONTROL) & 0x8000)) {
+                return 1;
+            }
+            
             int actionId = 0;
             if (vkCode == VK_BACK) {
                 actionId = 2; // Backspace
@@ -56,25 +61,36 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
 }
 
+void CALLBACK RehookTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
+    if (hKeyboardHook) {
+        UnhookWindowsHookEx(hKeyboardHook);
+    }
+    hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, NULL, 0);
+}
+
 void RunMessageLoop() {
     hook_thread_id = GetCurrentThreadId();
     hKeyboardHook = SetWindowsHookEx(WH_KEYBOARD_LL, KeyboardProc, NULL, 0);
     if (!hKeyboardHook) return;
+    
+    SetTimer(NULL, 1, 15000, (TIMERPROC)RehookTimerProc);
     
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
     }
-    UnhookWindowsHookEx(hKeyboardHook);
+    KillTimer(NULL, 1);
+    
+    if (hKeyboardHook) UnhookWindowsHookEx(hKeyboardHook);
     worker_running.store(false);
 }
 
 void DMASweeperLoop() {
     while (worker_running.load()) {
-        std::this_thread::sleep_for(std::chrono::seconds(5));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
         uint64_t current = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
-        if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) > 30) {
+        if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) >= 3) {
             SecureZeroMemory(secure_buffer, MAX_SECURE_SIZE);
             secure_len = 0;
             last_interaction_time.store(0);
