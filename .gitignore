@@ -59,3 +59,4 @@ Icon
 .DS_Store
 /build/Release
 /build
+/.cache

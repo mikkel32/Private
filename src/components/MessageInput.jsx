@@ -20,41 +20,68 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
     resize();
   }, [vaultLength, resize]);
 
+  const isComposing = useRef(false);
+
   const wipeMemory = useCallback(() => {
     window.electronAPI.wipeVault();
     setVaultLength(0);
     if (inputRef.current) inputRef.current.value = "";
   }, []);
 
+  const handleInput = useCallback((e) => {
+    if (isComposing.current) return;
+    const text = e.target.value;
+    if (text) {
+      const buffer = new TextEncoder().encode(text);
+      window.electronAPI.appendBuffer(buffer);
+      setVaultLength(l => l + [...text].length);
+      e.target.value = "";
+    }
+  }, []);
+
+  const handleCompositionStart = useCallback(() => {
+    isComposing.current = true;
+  }, []);
+
+  const handleCompositionEnd = useCallback((e) => {
+    isComposing.current = false;
+    const text = e.data || e.target.value; 
+    if (text) {
+      const buffer = new TextEncoder().encode(text);
+      window.electronAPI.appendBuffer(buffer);
+      setVaultLength(l => l + [...text].length);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  }, []);
+
   const handleKeyDown = useCallback(
     async (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
+      if (e.key === "Enter" && !e.shiftKey && !isComposing.current) {
         e.preventDefault();
         if (vaultLength > 0 && !isStreaming && !disabled) {
-          // Drain physical payload from C++ into a Volatile ArrayBuffer
           const bufferPayload = await window.electronAPI.drainVault();
-          if (bufferPayload && bufferPayload.length > 0) {
+          if (bufferPayload && bufferPayload.byteLength > 0) {
               const text = new TextDecoder().decode(bufferPayload);
               onSend(text);
           }
           wipeMemory();
         }
-      } else if (e.key === "Backspace") {
-        window.electronAPI.backspace();
-        setVaultLength(l => Math.max(0, l - 1));
-      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
-        window.electronAPI.appendByte(e.key.charCodeAt(0));
-        setVaultLength(l => l + 1);
+      } else if (e.key === "Backspace" && !isComposing.current) {
+        if (!inputRef.current || inputRef.current.value === "") {
+          window.electronAPI.backspace();
+          setVaultLength(l => Math.max(0, l - 1));
+        }
       }
-      // Extremely crucial: Wipe DOM input instantly to prevent Blink engine tracking
-      setTimeout(() => { if (inputRef.current) inputRef.current.value = ""; }, 0);
     },
     [isStreaming, disabled, onSend, wipeMemory, vaultLength]
   );
-  
-  const handleInputChange = useCallback((e) => {
-      // Disabled; inputs are intercepted at keydown phase natively.
-      e.target.value = "";
+
+  const handleFocus = useCallback(() => {
+    window.electronAPI.enableSecureInput();
+  }, []);
+
+  const handleBlur = useCallback(() => {
+    window.electronAPI.disableSecureInput();
   }, []);
 
   const handleSendClick = useCallback(async () => {
@@ -63,7 +90,7 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
     } else {
       if (vaultLength > 0 && !disabled) {
         const bufferPayload = await window.electronAPI.drainVault();
-        if (bufferPayload && bufferPayload.length > 0) {
+        if (bufferPayload && bufferPayload.byteLength > 0) {
             const text = new TextDecoder().decode(bufferPayload);
             onSend(text);
         }
@@ -78,15 +105,17 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
     <div className="input-area">
       <div className="input-container">
         <div className="input-wrapper">
-          {/* Absolute Isolation Ghost Wrapper */}
           <div className="secure-input-wrapper" style={{ position: 'relative', flex: 1, minHeight: '44px' }}>
-            <input
+            <textarea
               ref={inputRef}
-              type="password"
               title="OS-Level Keylogger Protection Active"
               defaultValue=""
-              onChange={handleInputChange}
+              onInput={handleInput}
+              onCompositionStart={handleCompositionStart}
+              onCompositionEnd={handleCompositionEnd}
               onKeyDown={handleKeyDown}
+              onFocus={handleFocus}
+              onBlur={handleBlur}
               disabled={disabled}
               id="message-input"
               autoComplete="off"
@@ -98,7 +127,7 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
                 position: 'absolute',
                 top: 0,
                 left: 0,
-                color: 'transparent',    // Hide the password discs
+                color: 'transparent',    // Hide text instantly
                 background: 'transparent',
                 caretColor: '#888',      // Keep cursor visible
                 border: 'none',

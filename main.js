@@ -35,8 +35,14 @@ app.commandLine.appendSwitch("disable-dev-shm-usage"); // Prevent sharing memory
 app.commandLine.appendSwitch("ignore-certificate-errors", "true"); // Allow volatile self-signed local certs
 
 // IPC Routers for Native C++ Proxy
-ipcMain.on("secure-append", (event, byte) => {
-  if (secureInput) secureInput.append(byte);
+ipcMain.on("secure-enable", () => {
+  if (secureInput) secureInput.enableSecureInput();
+});
+ipcMain.on("secure-disable", () => {
+  if (secureInput) secureInput.disableSecureInput();
+});
+ipcMain.on("secure-append", (event, buffer) => {
+  if (secureInput) secureInput.append(buffer);
 });
 ipcMain.on("secure-backspace", () => {
   if (secureInput) secureInput.backspace();
