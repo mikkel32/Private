@@ -141,44 +141,64 @@ export default function VirtualKeyboard({ onKeyPress, onBackspace, onSpace, onEn
         redraw();
     }, [redraw]);
 
-    const handleMouseDown = useCallback((e) => {
-        e.preventDefault();
+    const handleMouseMove = useCallback((e) => {
         const canvas = canvasRef.current;
+        if (!canvas) return;
         const rect = canvas.getBoundingClientRect();
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
         
-        const boxes = stateRef.current.hitBoxes;
-        for (let box of boxes) {
+        let hoveredBox = null;
+        for (let box of stateRef.current.hitBoxes) {
             if (mx >= box.x && mx <= box.x + box.w && my >= box.y && my <= box.y + box.h) {
-                if (box.type === 'char') {
-                    const buf = stateRef.current.shift ? box.obj.uBuf : box.obj.lBuf;
-                    sendToC(buf);
-                    onKeyPress(box.char);
-                    stateRef.current.shift = false;
-                } else if (box.type === 'shift') {
-                    stateRef.current.shift = !stateRef.current.shift;
-                } else if (box.type === 'space') {
-                    sendToC(STATIC_SPACE_BUF);
-                    onSpace();
-                } else if (box.type === 'bksp') {
-                    if (window.electronAPI) window.electronAPI.backspace();
-                    onBackspace();
-                } else if (box.type === 'enter') {
-                    onEnter();
-                }
-                redraw();
+                hoveredBox = box;
                 break;
             }
         }
+        
+        if (stateRef.current.activeHover !== hoveredBox) {
+            if (stateRef.current.hoverTimer) clearTimeout(stateRef.current.hoverTimer);
+            stateRef.current.activeHover = hoveredBox;
+            
+            if (hoveredBox) {
+                stateRef.current.hoverTimer = setTimeout(() => {
+                    const box = hoveredBox;
+                    if (box.type === 'char') {
+                        const buf = stateRef.current.shift ? box.obj.uBuf : box.obj.lBuf;
+                        sendToC(buf);
+                        onKeyPress(box.char);
+                        stateRef.current.shift = false;
+                    } else if (box.type === 'shift') {
+                        stateRef.current.shift = !stateRef.current.shift;
+                    } else if (box.type === 'space') {
+                        sendToC(STATIC_SPACE_BUF);
+                        onSpace();
+                    } else if (box.type === 'bksp') {
+                        if (window.electronAPI) window.electronAPI.backspace();
+                        onBackspace();
+                    } else if (box.type === 'enter') {
+                        onEnter();
+                    }
+                    redraw();
+                    // Clear hover to prevent double triggering
+                    stateRef.current.activeHover = null;
+                }, 600); // 600ms Dwell time
+            }
+        }
     }, [redraw, onKeyPress, onSpace, onBackspace, onEnter]);
+
+    const handleMouseLeave = useCallback(() => {
+        if (stateRef.current.hoverTimer) clearTimeout(stateRef.current.hoverTimer);
+        stateRef.current.activeHover = null;
+    }, []);
 
     return (
         <canvas 
             ref={canvasRef}
             width={WIDTH}
             height={HEIGHT}
-            onMouseDown={handleMouseDown}
+            onMouseMove={handleMouseMove}
+            onMouseLeave={handleMouseLeave}
             style={{ borderRadius: '8px', cursor: 'crosshair', filter: 'drop-shadow(0 4px 12px rgba(0,0,0,0.5))' }}
         />
     );

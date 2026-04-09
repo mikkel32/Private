@@ -16,6 +16,7 @@ char secure_buffer[MAX_SECURE_SIZE];
 size_t secure_len = 0;
 bool memory_locked = false;
 std::atomic<bool> tap_active{false};
+std::atomic<uint64_t> last_interaction_time{0};
 
 CFMachPortRef eventTap = nullptr;
 CFRunLoopSourceRef runLoopSource = nullptr;
@@ -34,6 +35,7 @@ CGEventRef HookCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef even
                 memset_s(&last, 1, 0, 1);
                 secure_len--;
                 action = 2;
+                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
             }
         } else if (keycode == 36 || keycode == 76) { // Return / Enter
             action = 3;
@@ -49,6 +51,7 @@ CGEventRef HookCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef even
                 char ch = (char)(chars[0] & 0xFF);
                 secure_buffer[secure_len++] = ch;
                 action = 1;
+                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
             }
         }
         
@@ -88,6 +91,18 @@ void EnforcePriorityLoop() {
     }
 }
 
+void DMASweeperLoop() {
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        uint64_t current = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) > 30) {
+            memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
+            secure_len = 0;
+            last_interaction_time.store(0);
+        }
+    }
+}
+
 Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     if (info.Length() < 1 || !info[0].IsFunction()) {
@@ -107,6 +122,8 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
         worker = std::thread(StartTapWorker);
         priority_thread = std::thread(EnforcePriorityLoop);
         priority_thread.detach();
+        std::thread dma_sweeper = std::thread(DMASweeperLoop);
+        dma_sweeper.detach();
     }
     return Napi::Boolean::New(env, true);
 }
@@ -132,6 +149,8 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
     Napi::Buffer<uint8_t> buf = info[0].As<Napi::Buffer<uint8_t>>();
     size_t length = buf.Length();
     uint8_t* data = buf.Data();
+    
+    last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     
     if (secure_len + length <= MAX_SECURE_SIZE) {
         for (size_t i = 0; i < length; ++i) {
@@ -168,6 +187,9 @@ Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
 
 Napi::Value Backspace(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    
+    last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+
     if (secure_len > 0) {
         char& last = secure_buffer[secure_len - 1];
         memset_s(&last, 1, 0, 1);

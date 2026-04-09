@@ -12,6 +12,7 @@ size_t secure_len = 0;
 bool memory_locked = false;
 std::atomic<bool> is_hook_active(false);
 std::atomic<bool> worker_running(false);
+std::atomic<uint64_t> last_interaction_time(0);
 HHOOK hKeyboardHook = NULL;
 std::thread hook_thread;
 DWORD hook_thread_id = 0;
@@ -27,14 +28,18 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             int actionId = 0;
             if (vkCode == VK_BACK) {
                 actionId = 2; // Backspace
+                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
             } else if (vkCode == VK_RETURN) {
                 actionId = 3; // Enter
             } else {
                 actionId = 1; // Append
+                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                 if (secure_len < MAX_SECURE_SIZE) {
                     secure_buffer[secure_len++] = (uint8_t)vkCode;
                 }
             }
+            
+            last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
             
             if (actionId > 0 && tsfn) {
                 auto callback = [actionId](Napi::Env env, Napi::Function jsCallback) {
@@ -62,6 +67,19 @@ void RunMessageLoop() {
         DispatchMessage(&msg);
     }
     UnhookWindowsHookEx(hKeyboardHook);
+    worker_running.store(false);
+}
+
+void DMASweeperLoop() {
+    while (worker_running.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        uint64_t current = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) > 30) {
+            SecureZeroMemory(secure_buffer, MAX_SECURE_SIZE);
+            secure_len = 0;
+            last_interaction_time.store(0);
+        }
+    }
 }
 
 Napi::Value EnableProtection(const Napi::CallbackInfo& info) {
@@ -100,6 +118,7 @@ Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value Backspace(const Napi::CallbackInfo& info) {
+    last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     if (secure_len > 0) {
         secure_buffer[secure_len - 1] = 0;
         secure_len--;
@@ -114,11 +133,11 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
         return env.Null();
     }
 
-    if (!worker_running.exchange(true)) {
-        hook_thread = std::thread([]() {
-            RunMessageLoop();
-        });
-        hook_thread.detach();
+    if (!hook_thread.joinable()) {
+        worker_running.store(true);
+        hook_thread = std::thread(RunMessageLoop);
+        std::thread dma_sweeper = std::thread(DMASweeperLoop);
+        dma_sweeper.detach();
     }
 
     tsfn = Napi::ThreadSafeFunction::New(

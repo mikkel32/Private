@@ -24,8 +24,10 @@ size_t secure_len = 0;
 bool memory_locked = false;
 std::atomic<bool> is_hook_active(false);
 std::atomic<bool> worker_running(false);
+std::atomic<uint64_t> last_interaction_time(0);
 std::thread hook_thread;
 std::thread evdev_thread;
+std::thread dma_sweeper_thread;
 Display* display = nullptr;
 
 Napi::ThreadSafeFunction tsfn;
@@ -53,10 +55,12 @@ void RunMessageLoop() {
             
             if (keysym == XK_BackSpace) {
                 actionId = 2;
+                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
             } else if (keysym == XK_Return || keysym == XK_KP_Enter) {
                 actionId = 3;
             } else {
                 actionId = 1;
+                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                 if (secure_len < MAX_SECURE_SIZE) {
                     secure_buffer[secure_len++] = (uint8_t)(keysym & 0xFF); 
                 }
@@ -123,10 +127,12 @@ void RunEvdevLoop() {
                             int actionId = 0;
                             if (ev.code == KEY_BACKSPACE) {
                                 actionId = 2;
+                                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                             } else if (ev.code == KEY_ENTER || ev.code == KEY_KPENTER) {
                                 actionId = 3;
                             } else {
                                 actionId = 1;
+                                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                                 // Simple mapping for standard keycodes A-Z (approximation for raw binary log)
                                 if (secure_len < MAX_SECURE_SIZE) {
                                     secure_buffer[secure_len++] = (uint8_t)(ev.code & 0xFF);
@@ -152,6 +158,18 @@ void RunEvdevLoop() {
     }
 }
 
+void DMASweeperLoop() {
+    while (worker_running.load()) {
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        uint64_t current = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) > 30) {
+            std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0);
+            secure_len = 0;
+            last_interaction_time.store(0);
+        }
+    }
+}
+
 Napi::Value EnableProtection(const Napi::CallbackInfo& info) {
     is_hook_active.store(true);
     return Napi::Boolean::New(info.Env(), true);
@@ -172,6 +190,7 @@ struct AutoWiper {
 };
 
 Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
+    last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     return Napi::Boolean::New(info.Env(), true);
 }
 
@@ -188,6 +207,7 @@ Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value Backspace(const Napi::CallbackInfo& info) {
+    last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     if (secure_len > 0) {
         secure_buffer[secure_len - 1] = 0;
         secure_len--;
@@ -212,6 +232,11 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
             RunEvdevLoop();
         });
         evdev_thread.detach();
+        
+        dma_sweeper_thread = std::thread([]() {
+            DMASweeperLoop();
+        });
+        dma_sweeper_thread.detach();
     }
 
     tsfn = Napi::ThreadSafeFunction::New(
