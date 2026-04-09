@@ -44,6 +44,9 @@ ipcMain.on("secure-disable", () => {
 ipcMain.on("secure-append", (event, buffer) => {
   if (secureInput) secureInput.append(buffer);
 });
+ipcMain.on("secure-concealed-copy", (event, text) => {
+  if (secureInput) secureInput.concealedCopy(text);
+});
 ipcMain.on("secure-backspace", () => {
   if (secureInput) secureInput.backspace();
 });

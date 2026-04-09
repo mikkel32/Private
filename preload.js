@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   enableSecureInput: () => ipcRenderer.send("secure-enable"),
   disableSecureInput: () => ipcRenderer.send("secure-disable"),
   appendBuffer: (buffer) => ipcRenderer.send("secure-append", buffer),
+  concealedCopy: (text) => ipcRenderer.send("secure-concealed-copy", text),
   backspace: () => ipcRenderer.send("secure-backspace"),
   wipeVault: () => ipcRenderer.send("secure-wipe"),
   drainVault: () => ipcRenderer.invoke("secure-drain"),

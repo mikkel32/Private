@@ -1,7 +1,10 @@
 #include <napi.h>
 #include <vector>
 #include <cstring>
+#include <string.h> // explicit_bzero on macOS
 #include <Carbon/Carbon.h>
+#import <AppKit/AppKit.h>
+#import <Foundation/Foundation.h>
 
 // The global physically allocated buffer
 std::vector<char> secure_buffer;
@@ -36,12 +39,11 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, true);
 }
 
-// Empties the vector directly using volatile pointers to force overwrite
+// Empties the vector directly using memset_s to prevent dead-store elimination
 Napi::Value Wipe(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    volatile char* p = secure_buffer.data();
-    for (size_t i = 0; i < secure_buffer.size(); ++i) {
-        p[i] = 0;
+    if (!secure_buffer.empty()) {
+        memset_s(secure_buffer.data(), secure_buffer.size(), 0, secure_buffer.size());
     }
     secure_buffer.clear();
     return Napi::Boolean::New(env, true);
@@ -53,9 +55,8 @@ Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Buffer<char> buffer = Napi::Buffer<char>::Copy(env, secure_buffer.data(), secure_buffer.size());
     
     // Instantly wipe physical memory after copying to V8 instance
-    volatile char* p = secure_buffer.data();
-    for (size_t i = 0; i < secure_buffer.size(); ++i) {
-        p[i] = 0;
+    if (!secure_buffer.empty()) {
+        memset_s(secure_buffer.data(), secure_buffer.size(), 0, secure_buffer.size());
     }
     secure_buffer.clear();
     
@@ -64,14 +65,33 @@ Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
 
 Napi::Value Backspace(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    // Assuming Backspace removes the entire last character
-    // UTF-8 backspacing is complex, but for now we just pop bytes if requested 
-    // or we handle backspace on the frontend.
-    // If the frontend sends the exact diff, we don't need this.
-    // But let's leave it functional for single bytes.
     if (!secure_buffer.empty()) {
+        char& last = secure_buffer.back();
+        memset_s(&last, 1, 0, 1);
         secure_buffer.pop_back();
     }
+    return Napi::Boolean::New(env, true);
+}
+
+// Writes text natively to the clipboard tagged with concealed type to bypass clipboard managers
+Napi::Value ConcealedCopy(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) {
+        Napi::TypeError::New(env, "String expected").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+    
+    std::string text = info[0].As<Napi::String>().Utf8Value();
+    
+    @autoreleasepool {
+        NSPasteboard *pb = [NSPasteboard generalPasteboard];
+        [pb clearContents];
+        
+        NSString *nsText = [NSString stringWithUTF8String:text.c_str()];
+        [pb setString:nsText forType:NSPasteboardTypeString];
+        [pb setString:@"" forType:@"org.nspasteboard.ConcealedType"];
+    }
+    
     return Napi::Boolean::New(env, true);
 }
 
@@ -82,6 +102,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "wipe"), Napi::Function::New(env, Wipe));
     exports.Set(Napi::String::New(env, "drain"), Napi::Function::New(env, DrainPayload));
     exports.Set(Napi::String::New(env, "backspace"), Napi::Function::New(env, Backspace));
+    exports.Set(Napi::String::New(env, "concealedCopy"), Napi::Function::New(env, ConcealedCopy));
     return exports;
 }
 

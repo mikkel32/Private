@@ -2,7 +2,7 @@
   "targets": [
     {
       "target_name": "secure_input",
-      "sources": [ "src/native/secure_input.cpp" ],
+      "sources": [ "src/native/secure_input.mm" ],
       "include_dirs": [
         "<!@(node -p \"require('node-addon-api').include\")"
       ],
@@ -13,7 +13,9 @@
       "cflags_cc!": [ "-fno-exceptions" ],
       "xcode_settings": {
         "OTHER_LDFLAGS": [
-          "-framework Carbon"
+          "-framework Carbon",
+          "-framework AppKit",
+          "-framework Foundation"
         ],
         "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
         "CLANG_CXX_LIBRARY": "libc++",

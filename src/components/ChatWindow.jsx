@@ -76,16 +76,17 @@ export default function ChatWindow({ messages, isStreaming }) {
     }
   };
 
-  // Poisoned Clipboard Manager Fix
+  // Poisoned Clipboard Manager Fix (Now Native Concealed Pasteboard)
   const secureCopy = (text) => {
-    navigator.clipboard.writeText(text);
-    // Erase clipboard after 10 seconds with scrambled bytes
-    setTimeout(() => {
-      const garbage = Array.from({ length: 64 }, () => 
-        String.fromCharCode(Math.floor(Math.random() * 94) + 33)
-      ).join('');
-      navigator.clipboard.writeText(`[SYSTEM OVERWRITE: CLIPPING UNAUTHORIZED] ${garbage}`);
-    }, 10000);
+    if (window.electronAPI && window.electronAPI.concealedCopy) {
+      window.electronAPI.concealedCopy(text);
+    } else {
+      // Fallback if electronAPI is mysteriously unavailable
+      navigator.clipboard.writeText(text);
+      setTimeout(() => {
+        navigator.clipboard.writeText(`[SYSTEM OVERWRITE: CLIPPING UNAUTHORIZED]`);
+      }, 10000);
+    }
   };
 
   if (messages.length === 0) {

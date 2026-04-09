@@ -20,44 +20,17 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
     resize();
   }, [vaultLength, resize]);
 
-  const isComposing = useRef(false);
-
   const wipeMemory = useCallback(() => {
     window.electronAPI.wipeVault();
     setVaultLength(0);
-    if (inputRef.current) inputRef.current.value = "";
-  }, []);
-
-  const handleInput = useCallback((e) => {
-    if (isComposing.current) return;
-    const text = e.target.value;
-    if (text) {
-      const buffer = new TextEncoder().encode(text);
-      window.electronAPI.appendBuffer(buffer);
-      setVaultLength(l => l + [...text].length);
-      e.target.value = "";
-    }
-  }, []);
-
-  const handleCompositionStart = useCallback(() => {
-    isComposing.current = true;
-  }, []);
-
-  const handleCompositionEnd = useCallback((e) => {
-    isComposing.current = false;
-    const text = e.data || e.target.value; 
-    if (text) {
-      const buffer = new TextEncoder().encode(text);
-      window.electronAPI.appendBuffer(buffer);
-      setVaultLength(l => l + [...text].length);
-      if (inputRef.current) inputRef.current.value = "";
-    }
   }, []);
 
   const handleKeyDown = useCallback(
     async (e) => {
-      if (e.key === "Enter" && !e.shiftKey && !isComposing.current) {
-        e.preventDefault();
+      // Forebyg DOM vha. preventDefault så Blink/V8 Strings aldrig allokeres til `value`.
+      e.preventDefault();
+
+      if (e.key === "Enter" && !e.shiftKey) {
         if (vaultLength > 0 && !isStreaming && !disabled) {
           const bufferPayload = await window.electronAPI.drainVault();
           if (bufferPayload && bufferPayload.byteLength > 0) {
@@ -66,16 +39,18 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
           }
           wipeMemory();
         }
-      } else if (e.key === "Backspace" && !isComposing.current) {
-        if (!inputRef.current || inputRef.current.value === "") {
-          window.electronAPI.backspace();
-          setVaultLength(l => Math.max(0, l - 1));
-        }
+      } else if (e.key === "Backspace") {
+        window.electronAPI.backspace();
+        setVaultLength(l => Math.max(0, l - 1));
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // Enforce standard tegn over V8 IPC uden brug af DOM node
+        const buffer = new TextEncoder().encode(e.key);
+        window.electronAPI.appendBuffer(buffer);
+        setVaultLength(l => l + 1);
       }
     },
     [isStreaming, disabled, onSend, wipeMemory, vaultLength]
   );
-
   const handleFocus = useCallback(() => {
     window.electronAPI.enableSecureInput();
   }, []);
@@ -106,13 +81,12 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
       <div className="input-container">
         <div className="input-wrapper">
           <div className="secure-input-wrapper" style={{ position: 'relative', flex: 1, minHeight: '44px' }}>
-            <textarea
+            {/* Absolute Isolation Ghost Wrapper bypassing DOM String allocation */}
+            <input
               ref={inputRef}
+              type="text"
               title="OS-Level Keylogger Protection Active"
               defaultValue=""
-              onInput={handleInput}
-              onCompositionStart={handleCompositionStart}
-              onCompositionEnd={handleCompositionEnd}
               onKeyDown={handleKeyDown}
               onFocus={handleFocus}
               onBlur={handleBlur}
