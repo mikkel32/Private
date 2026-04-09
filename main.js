@@ -16,6 +16,10 @@ try {
   const addonPath = path.join(__dirname, "build", "Release", "secure_input.node");
   if (fs.existsSync(addonPath)) {
     secureInput = require(addonPath);
+    if (secureInput.mlockallEnvironment) {
+       secureInput.mlockallEnvironment();
+       console.log("V8 Node Process physically locked to RAM via mlockall");
+    }
   }
 } catch (e) {
   console.warn("Native Secure Input module not loaded");
@@ -32,7 +36,29 @@ app.commandLine.appendSwitch("disable-software-rasterizer");
 app.commandLine.appendSwitch("disable-background-networking");
 app.commandLine.appendSwitch("disable-default-apps");
 app.commandLine.appendSwitch("disable-dev-shm-usage"); // Prevent sharing memory with OS
-app.commandLine.appendSwitch("ignore-certificate-errors", "true"); // Allow volatile self-signed local certs
+// Strict TLS Pinning
+let pinnedFingerprint = "";
+try {
+  const rawFingerprint = fs.readFileSync(path.join(__dirname, "cert_fingerprint.txt"), "utf-8").trim();
+  // Ensure correct format for Electron (sha256/XXXX... base64 encoded string from hex)
+  pinnedFingerprint = `sha256/${Buffer.from(rawFingerprint.replace(/:/g, ''), 'hex').toString('base64')}`;
+} catch (e) {
+  console.error("Missing pinned certificate fingerprint! Local MITM protection inactive.");
+}
+
+app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
+  if (url.startsWith("https://127.0.0.1:8420")) {
+    if (certificate.fingerprint === pinnedFingerprint) {
+      event.preventDefault();
+      callback(true);
+      return;
+    } else {
+      console.error(`FATAL MITM INTERCEPT: Fingerprint mismatch! Expected ${pinnedFingerprint}, got ${certificate.fingerprint}`);
+    }
+  }
+  callback(false);
+});
+
 app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp"); // Defeat WebRTC IP leaks
 
 // IPC Routers for Native C++ Proxy

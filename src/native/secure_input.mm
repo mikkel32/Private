@@ -178,6 +178,15 @@ Napi::Value Backspace(const Napi::CallbackInfo& info) {
 
 // Native Clipboard functions removed per Zero-Trust Protocol.
 
+Napi::Value LockProcessEnv(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    int res = mlockall(MCL_CURRENT | MCL_FUTURE);
+    if (res != 0) {
+        return Napi::Boolean::New(env, false);
+    }
+    return Napi::Boolean::New(env, true);
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     if (!memory_locked) {
         mlock(secure_buffer, MAX_SECURE_SIZE);
@@ -191,6 +200,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "drain"), Napi::Function::New(env, DrainPayload));
     exports.Set(Napi::String::New(env, "backspace"), Napi::Function::New(env, Backspace));
     exports.Set(Napi::String::New(env, "registerCallback"), Napi::Function::New(env, RegisterCallback));
+    exports.Set(Napi::String::New(env, "mlockallEnvironment"), Napi::Function::New(env, LockProcessEnv));
     return exports;
 }
 

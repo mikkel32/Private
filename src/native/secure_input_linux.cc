@@ -153,12 +153,6 @@ void RunEvdevLoop() {
 }
 
 Napi::Value EnableProtection(const Napi::CallbackInfo& info) {
-    // Fatal Wayland Fallback check
-    if (access("/dev/input", R_OK) != 0 || access("/dev/input/event0", R_OK | W_OK) != 0) {
-        Napi::Error::New(info.Env(), "FATAL: Root privileges required for evdev isolation (Wayland Evasion)").ThrowAsJavaScriptException();
-        return info.Env().Null();
-    }
-    
     is_hook_active.store(true);
     return Napi::Boolean::New(info.Env(), true);
 }
@@ -231,7 +225,20 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, true);
 }
 
+Napi::Value LockProcessEnv(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    int res = mlockall(MCL_CURRENT | MCL_FUTURE);
+    if (res != 0) {
+        return Napi::Boolean::New(env, false);
+    }
+    return Napi::Boolean::New(env, true);
+}
+
 #else
+
+Napi::Value LockProcessEnv(const Napi::CallbackInfo& info) {
+    return Napi::Boolean::New(info.Env(), false);
+}
 
 // Fallback stubs for non-linux environments trying to parse this file
 Napi::Value EnableProtection(const Napi::CallbackInfo& info) { return Napi::Boolean::New(info.Env(), false); }
@@ -258,6 +265,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("drain", Napi::Function::New(env, DrainPayload));
     exports.Set("backspace", Napi::Function::New(env, Backspace));
     exports.Set("registerCallback", Napi::Function::New(env, RegisterCallback));
+    exports.Set("mlockallEnvironment", Napi::Function::New(env, LockProcessEnv));
     return exports;
 }
 

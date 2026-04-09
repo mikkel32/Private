@@ -162,6 +162,11 @@ def generate_tls_certs() -> None:
             "-out", "cert.pem", "-keyout", "key.pem", "-days", "365",
             "-subj", "/CN=localhost"
         ])
+    
+    # Always generate fingerprint to ensure node receives latest hash mapping
+    out = subprocess.check_output(["openssl", "x509", "-in", "cert.pem", "-noout", "-fingerprint", "-sha256"])
+    fingerprint = out.decode("utf-8").strip().split("=")[1]
+    (ROOT / "cert_fingerprint.txt").write_text(fingerprint)
 
 
 # ── Phase 3: Node.js / Electron ──────────────────────────────────────────────
