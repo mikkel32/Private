@@ -61,7 +61,8 @@ class SecureMemoryVault:
             new_buf[:len(old_buf)] = old_buf
             new_buf[len(old_buf):] = block
             
-            for i in range(len(old_buf)): old_buf[i] = 0
+            import ctypes
+            ctypes.memset(ctypes.addressof((ctypes.c_char * len(old_buf)).from_buffer(old_buf)), 0, len(old_buf))
                 
             self._mlock(new_buf)
             self.buffers[cid] = new_buf
@@ -112,8 +113,7 @@ class SecureMemoryVault:
             new_buf[len(old_buf):] = block
             
             # Secure wipe old buffer
-            for i in range(len(old_buf)):
-                old_buf[i] = 0
+            ctypes.memset(ctypes.addressof((ctypes.c_char * len(old_buf)).from_buffer(old_buf)), 0, len(old_buf))
                 
             self._mlock(new_buf)
             self.buffers[conv_id] = new_buf

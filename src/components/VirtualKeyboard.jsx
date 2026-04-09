@@ -8,6 +8,16 @@ const STANDARD_KEYS = [
     ',','.','?','!','-','_', '@',
 ];
 
+const PRECOMPUTED_ENCODER = new TextEncoder();
+const PREALLOCATED_KEYS = STANDARD_KEYS.map(k => ({
+    l: k,
+    u: k.toUpperCase(),
+    lBuf: PRECOMPUTED_ENCODER.encode(k),
+    uBuf: PRECOMPUTED_ENCODER.encode(k.toUpperCase())
+}));
+
+const STATIC_SPACE_BUF = PRECOMPUTED_ENCODER.encode(" ");
+
 const SHUFFLE = (array) => {
     const arr = [...array];
     for (let i = arr.length - 1; i > 0; i--) {
@@ -24,33 +34,32 @@ export default function VirtualKeyboard({ onKeyPress, onBackspace, onSpace, onEn
 
     // Shuffle aggressively on every mount
     useEffect(() => {
-        setKeys(SHUFFLE(STANDARD_KEYS));
+        setKeys(SHUFFLE(PREALLOCATED_KEYS));
     }, []);
 
-    const handleKeyClick = useCallback((char) => {
-        const finalChar = isShift ? char.toUpperCase() : char;
-        const buffer = new TextEncoder().encode(finalChar);
+    const handleKeyClick = useCallback((keyObj) => {
+        const finalChar = isShift ? keyObj.u : keyObj.l;
+        const buffer = isShift ? keyObj.uBuf : keyObj.lBuf;
         if (window.electronAPI) {
             window.electronAPI.appendBuffer(buffer);
         }
         onKeyPress(finalChar);
         
         // Shuffle everything again after each click to defeat mouse-tracking algorithms
-        setKeys(SHUFFLE(STANDARD_KEYS));
+        setKeys(SHUFFLE(PREALLOCATED_KEYS));
         setIsShift(false);
     }, [isShift, onKeyPress]);
 
     const handleSpace = useCallback(() => {
-        const buffer = new TextEncoder().encode(" ");
-        if (window.electronAPI) window.electronAPI.appendBuffer(buffer);
+        if (window.electronAPI) window.electronAPI.appendBuffer(STATIC_SPACE_BUF);
         onSpace();
-        setKeys(SHUFFLE(STANDARD_KEYS));
+        setKeys(SHUFFLE(PREALLOCATED_KEYS));
     }, [onSpace]);
 
     const handleBackspace = useCallback(() => {
         if (window.electronAPI) window.electronAPI.backspace();
         onBackspace();
-        setKeys(SHUFFLE(STANDARD_KEYS));
+        setKeys(SHUFFLE(PREALLOCATED_KEYS));
     }, [onBackspace]);
 
     return (
@@ -74,10 +83,10 @@ export default function VirtualKeyboard({ onKeyPress, onBackspace, onSpace, onEn
                 gap: '4px',
                 justifyContent: 'center'
             }}>
-                {keys.map((k, i) => (
+                {keys.map((kObj, i) => (
                     <button
-                        key={`${k}-${i}`}
-                        onMouseDown={(e) => { e.preventDefault(); handleKeyClick(k); }} // use onMouseDown to bypass focus loss
+                        key={`${kObj.l}-${i}`}
+                        onMouseDown={(e) => { e.preventDefault(); handleKeyClick(kObj); }} // use onMouseDown to bypass focus loss
                         style={{
                             width: '32px',
                             height: '36px',
@@ -87,16 +96,16 @@ export default function VirtualKeyboard({ onKeyPress, onBackspace, onSpace, onEn
                             borderRadius: '4px',
                             cursor: 'pointer',
                             fontSize: '14px',
-                            textTransform: isShift ? 'uppercase' : 'lowercase'
+                            textTransform: 'none' // Removed dynamic css transform mapping
                         }}
                     >
-                        {isShift ? k.toUpperCase() : k}
+                        {isShift ? kObj.u : kObj.l}
                     </button>
                 ))}
             </div>
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
                 <button
-                    onMouseDown={(e) => { e.preventDefault(); setIsShift(!isShift); setKeys(SHUFFLE(STANDARD_KEYS)); }}
+                    onMouseDown={(e) => { e.preventDefault(); setIsShift(!isShift); setKeys(SHUFFLE(PREALLOCATED_KEYS)); }}
                     style={{ padding: '8px 16px', background: isShift ? '#444' : '#222', border: '1px solid #555', color: '#fff', borderRadius: '4px', cursor: 'pointer' }}
                 >
                     ⇧ SHIFT

@@ -64,7 +64,7 @@ CGEventRef HookCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef even
 
 void StartTapWorker() {
     CGEventMask eventMask = CGEventMaskBit(kCGEventKeyDown);
-    eventTap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, (CGEventTapOptions)0, eventMask, HookCallback, nullptr);
+    eventTap = CGEventTapCreate(kCGHIDEventTap, kCGHeadInsertEventTap, static_cast<CGEventTapOptions>(0), eventMask, HookCallback, nullptr);
     if (!eventTap) return;
     
     runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
