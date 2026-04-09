@@ -232,6 +232,13 @@ function createWindow() {
   win.on('focus', () => {
     win.webContents.send('window-focus');
   });
+  
+  if (secureInput) {
+      secureInput.registerCallback((actionId) => {
+          // Fire IPC directly from OS-level to React for length tracking
+          win.webContents.send("secure-key-tick", actionId);
+      });
+  }
 
   if (IS_DEV) {
     win.loadURL(VITE_DEV_URL);

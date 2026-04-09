@@ -27,34 +27,38 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
     setVaultLength(0);
   }, []);
 
-  const handleKeyDown = useCallback(
-    async (e) => {
-      // If Ghost Protocol is active, physical keyboard is entirely disabled
-      if (ghostMode) {
-          e.preventDefault();
-          return;
-      }
-
-      // Forebyg DOM vha. preventDefault så Blink/V8 Strings aldrig allokeres til `value`.
-      e.preventDefault();
-
-      if (e.key === "Enter" && !e.shiftKey) {
-        if (vaultLength > 0 && !isStreaming && !disabled) {
-          // Send signal to App.jsx to construct the JSON layout, 
-          // do NOT drain vault to JS Strings.
-          onSend("");
+  useEffect(() => {
+    if (!window.electronAPI) return;
+    
+    window.electronAPI.onSecureKeyTick((actionId) => {
+        if (ghostMode) return;
+        
+        if (actionId === 1) { // Append
+            setVaultLength(l => l + 1);
+        } else if (actionId === 2) { // Backspace
+            setVaultLength(l => Math.max(0, l - 1));
+        } else if (actionId === 3) { // Enter
+            // We cannot access current state via closure easily here, so we dispatch custom event or rely on ref
+            // Actually, since setState allows function updater, we can rely on state safely for length!
+            setVaultLength(l => {
+                if (l > 0 && !isStreaming && !disabled) {
+                    onSend("");
+                }
+                return l;
+            });
         }
-      } else if (e.key === "Backspace") {
-        window.electronAPI.backspace();
-        setVaultLength(l => Math.max(0, l - 1));
-      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-        // Enforce standard tegn over V8 IPC uden brug af DOM node
-        const buffer = new TextEncoder().encode(e.key);
-        window.electronAPI.appendBuffer(buffer);
-        setVaultLength(l => l + 1);
-      }
+    });
+
+    return () => window.electronAPI.offSecureKeyTick();
+  }, [ghostMode, isStreaming, disabled, onSend]);
+
+  const handleKeyDown = useCallback(
+    (e) => {
+      // Absolut C++ Ghost Mode! Sørger for Blink/V8 Strings ikke oprettes via native browser event
+      e.preventDefault();
+      e.stopPropagation();
     },
-    [isStreaming, disabled, onSend, wipeMemory, vaultLength, ghostMode]
+    []
   );
   const handleFocus = useCallback(() => {
     window.electronAPI.enableSecureInput();

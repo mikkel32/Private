@@ -21,30 +21,55 @@ class SecureMemoryVault:
             print(f"[Secure Memory] Pinned buffer {len(buf)} bytes to RAM.")
 
     def get_history(self, conv_id: str) -> list[dict]:
-        """ Decodes physical RAM immediately into Python structs during V8 transaction """
+        """ Parses physical RAM block sequence into Python structs transiently """
         if conv_id not in self.buffers:
             return []
+            
+        buf = self.buffers[conv_id]
+        messages = []
+        offset = 0
+        length = len(buf)
         
-        raw = bytes(self.buffers[conv_id]).decode('utf-8')
-        if not raw:
-            return []
-        try:
-            return json.loads(raw)
-        except:
-            return []
+        while offset < length:
+            role_len = int.from_bytes(buf[offset:offset+4], 'big')
+            offset += 4
+            role = buf[offset:offset+role_len].decode('utf-8')
+            offset += role_len
+            
+            content_len = int.from_bytes(buf[offset:offset+4], 'big')
+            offset += 4
+            content = buf[offset:offset+content_len].decode('utf-8')
+            offset += content_len
+            
+            messages.append({"role": role, "content": content})
+            
+        return messages
 
-    def set_history(self, conv_id: str, messages: list[dict]):
-        """ Encodes struct into physical bytearray and pins it, sweeping the old one """
-        raw_bytes = json.dumps(messages).encode('utf-8')
+    def append_message(self, conv_id: str, role: str, content: str):
+        """ Appends structural data into physical bytearray, preserving mlock bounds by relocating securely """
+        role_bytes = role.encode('utf-8')
+        content_bytes = content.encode('utf-8')
+        
+        block = bytearray()
+        block.extend(len(role_bytes).to_bytes(4, 'big'))
+        block.extend(role_bytes)
+        block.extend(len(content_bytes).to_bytes(4, 'big'))
+        block.extend(content_bytes)
         
         if conv_id in self.buffers:
-            # Zero out old memory!
             old_buf = self.buffers[conv_id]
+            new_buf = bytearray(len(old_buf) + len(block))
+            new_buf[:len(old_buf)] = old_buf
+            new_buf[len(old_buf):] = block
+            
+            # Secure wipe old buffer
             for i in range(len(old_buf)):
                 old_buf[i] = 0
-
-        new_buf = bytearray(raw_bytes)
-        self._mlock(new_buf)
-        self.buffers[conv_id] = new_buf
+                
+            self._mlock(new_buf)
+            self.buffers[conv_id] = new_buf
+        else:
+            self._mlock(block)
+            self.buffers[conv_id] = block
 
 vault = SecureMemoryVault()

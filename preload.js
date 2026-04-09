@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   platform: process.platform,
   onWindowBlur: (callback) => ipcRenderer.on("window-blur", () => callback()),
   onWindowFocus: (callback) => ipcRenderer.on("window-focus", () => callback()),
+  onSecureKeyTick: (callback) => ipcRenderer.on("secure-key-tick", (_, actionId) => callback(actionId)),
+  offSecureKeyTick: () => ipcRenderer.removeAllListeners("secure-key-tick"),
   enableSecureInput: () => ipcRenderer.send("secure-enable"),
   disableSecureInput: () => ipcRenderer.send("secure-disable"),
   appendBuffer: (buffer) => ipcRenderer.send("secure-append", buffer),

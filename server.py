@@ -359,12 +359,11 @@ async def stream_canvas(request: Request):
     # Securely append to Mlocked vault!
     history = vault.get_history(conv_id)
     if not history and new_message:
-         history = [
-             {"role": "system", "content": "You are a secure assistant. Respond clearly."}
-         ]
+         vault.append_message(conv_id, "system", "You are a secure assistant. Respond clearly.")
+         
     if new_message:
-         history.append(new_message)
-         vault.set_history(conv_id, history)
+         vault.append_message(conv_id, new_message["role"], new_message["content"])
+         history = vault.get_history(conv_id) # Refresh history containing the user message
     
     enable_thinking = body.get("enable_thinking", True)
     thinking_budget = body.get("thinking_budget", 1024)
@@ -405,14 +404,18 @@ async def stream_canvas(request: Request):
                 yield length_prefix + png_bytes
                 
                 # Append to secure vault
-                history.append({"role": "assistant", "content": full_content})
-                vault.set_history(conv_id, history)
+                vault.append_message(conv_id, "assistant", full_content)
             
         except Exception as e:
             full_content += f"\n\n[System Error: {str(e)}]"
             png_bytes = render_chat_history(history, full_content)
             length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
             yield length_prefix + png_bytes
+        
+        finally:
+            import gc
+            # Manually trigger garbage collection here to destroy string allocations from `llama_cpp_python`
+            gc.collect()
 
     return StreamingResponse(
         generate_binary(),
