@@ -151,6 +151,13 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
             >
               {previewText ? previewText : (disabled ? "Waiting for server…" : (ghostMode ? "Ghost Protocol Active..."  : "Secure isolated input…"))}
             </div>
+            
+            {/* Kernel Warning Dropdown */}
+            {!ghostMode && (
+                <div style={{ position: 'absolute', top: '100%', left: 0, width: '100%', background: '#301010', color: '#ff6b6b', fontSize: '11px', padding: '4px 8px', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px', border: '1px solid #ff444455', borderTop: 'none', zIndex: -1, pointerEvents: 'none' }}>
+                    ⚠️ <b>PHYSICAL KEYBOARD ACTIVE:</b> Vulnerable to Kernel & Hardware level Keyloggers. Use Ghost Protocol (👻) for maximum isolation.
+                </div>
+            )}
           </div>
           <button
               onClick={() => setGhostMode(m => !m)}

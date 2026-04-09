@@ -124,7 +124,6 @@ ipcMain.on("secure-network-dispatch", (event, skeletonBuffer) => {
       });
 
       req.on('error', (err) => {
-        fs.appendFileSync("ipc-debug.log", `stream_canvas NETWORK ERROR: ${err}\n`);
         console.error("Network Error", err);
         event.sender.send("secure-stream-end");
       });
@@ -139,23 +138,19 @@ ipcMain.on("secure-network-dispatch", (event, skeletonBuffer) => {
       secret.fill(0);
     }
   } catch (err) {
-    fs.appendFileSync("ipc-debug.log", `Splice error: ${err}\n`);
     console.error("Splice error:", err);
   }
 });
 
 ipcMain.on("fetch-history", (event, id) => {
   const targetUrl = `https://127.0.0.1:8420/v1/chat/render/${id}`;
-  fs.appendFileSync("ipc-debug.log", `Issuing fetch-history to: ${targetUrl}\n`);
   const req = net.request({
     url: targetUrl,
     method: 'GET'
   });
   
   req.on('response', (res) => {
-    fs.appendFileSync("ipc-debug.log", `fetch-history response: ${res.statusCode}\n`);
     if (res.statusCode !== 200) {
-      res.on('data', d => fs.appendFileSync("ipc-debug.log", `fetch-history ERROR: ${d}\n`));
       return;
     }
     let currentBuffer = Buffer.alloc(0);
@@ -178,7 +173,6 @@ ipcMain.on("fetch-history", (event, id) => {
     });
   });
   req.on('error', (err) => {
-      fs.appendFileSync("ipc-debug.log", `fetch-history NETWORK ERROR: ${err}\n`);
       console.error("History fetch error:", err);
   });
   req.end();
