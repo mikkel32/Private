@@ -14,6 +14,10 @@ from __future__ import annotations
 
 import json
 import os
+import base64
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+export_keys = {}
 
 # Disable all AI telemetry
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
@@ -342,6 +346,51 @@ async def get_chat_render(conversation_id: str):
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+    )
+
+@app.get("/v1/chat/export/{conversation_id}")
+async def export_vault(conversation_id: str):
+    if conversation_id not in vault.buffers:
+        return JSONResponse(status_code=404, content={"error": "Vault not found"})
+        
+    raw_buffer = vault.buffers[conversation_id]
+    
+    # Generate 256-bit AES Key and 96-bit Nonce
+    key = os.urandom(32)
+    nonce = os.urandom(12)
+    
+    aesgcm = AESGCM(key)
+    # The payload is entirely encrypted, immune to clipboard scrapers
+    ciphertext = aesgcm.encrypt(nonce, bytes(raw_buffer), None)
+    
+    # Store the key volatile for exactly one fetch via image_renderer
+    # Convert to readable hex for user backup
+    export_keys[conversation_id] = key.hex()
+    
+    # Prepend Nonce to Ciphertext for standard GCM structure
+    final_payload = nonce + ciphertext
+    
+    return StreamingResponse(
+        iter([final_payload]),
+        media_type="application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename=Monolith_Vault_{conversation_id[:8]}.enc"
+        }
+    )
+
+@app.get("/v1/chat/export/key/{conversation_id}")
+async def export_vault_key(conversation_id: str):
+    key_hex = export_keys.pop(conversation_id, None)
+    if not key_hex:
+         png_bytes = render_chat_history([], "[SECURITY WARNING]\nDecryption Key destroyed or never existed.")
+    else:
+         content = f"VAULT EXPORT SUCCESSFUL\n\nAES-256-GCM DECRYPTION KEY:\n{key_hex}\n\nWarning: This key has been purged from Memory. If you close this window, the file is permanently unreadable."
+         png_bytes = render_chat_history([], content)
+         
+    # We do NOT return a length prefix here since we expect a raw image/png response for an <img> tag or buffer
+    return StreamingResponse(
+        iter([png_bytes]),
+        media_type="image/png"
     )
 
 @app.post("/v1/chat/stream_canvas")

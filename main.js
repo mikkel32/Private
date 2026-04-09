@@ -45,9 +45,7 @@ ipcMain.on("secure-disable", () => {
 ipcMain.on("secure-append", (event, buffer) => {
   if (secureInput) secureInput.append(buffer);
 });
-ipcMain.on("secure-concealed-copy", (event, text) => {
-  if (secureInput) secureInput.concealedCopy(text);
-});
+
 ipcMain.on("secure-backspace", () => {
   if (secureInput) secureInput.backspace();
 });
@@ -183,6 +181,47 @@ ipcMain.on("fetch-history", (event, id) => {
       fs.appendFileSync("ipc-debug.log", `fetch-history NETWORK ERROR: ${err}\n`);
       console.error("History fetch error:", err);
   });
+  req.end();
+});
+
+ipcMain.on("export-vault", (event, id) => {
+  const os = require('os');
+  const targetEncPath = path.join(os.homedir(), 'Desktop', `Monolith_Vault_${id.substring(0, 8)}.enc`);
+  
+  const req = net.request({
+    url: `https://127.0.0.1:8420/v1/chat/export/${id}`,
+    method: 'GET'
+  });
+  
+  req.on('response', (res) => {
+    if (res.statusCode !== 200) {
+      console.error("Export Vault error:", res.statusCode);
+      return;
+    }
+    const fileStream = fs.createWriteStream(targetEncPath);
+    res.on('data', chunk => fileStream.write(chunk));
+    res.on('end', () => {
+       fileStream.end();
+       
+       // The file is secure. Now securely request the PNG raster of the password.
+       const reqKey = net.request({
+         url: `https://127.0.0.1:8420/v1/chat/export/key/${id}`,
+         method: 'GET'
+       });
+       
+       reqKey.on('response', (kRes) => {
+           let pngBuffer = Buffer.alloc(0);
+           kRes.on('data', chunk => {
+               pngBuffer = Buffer.concat([pngBuffer, chunk]);
+           });
+           kRes.on('end', () => {
+               event.sender.send("vault-export-key", pngBuffer);
+           });
+       });
+       reqKey.end();
+    });
+  });
+  req.on('error', err => console.error("Export Vault Network Error:", err));
   req.end();
 });
 

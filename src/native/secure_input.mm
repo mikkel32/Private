@@ -160,25 +160,7 @@ Napi::Value Backspace(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, true);
 }
 
-Napi::Value ConcealedCopy(const Napi::CallbackInfo& info) {
-    Napi::Env env = info.Env();
-    if (info.Length() < 1 || !info[0].IsString()) {
-        Napi::TypeError::New(env, "String expected").ThrowAsJavaScriptException();
-        return env.Null();
-    }
-    
-    std::string text = info[0].As<Napi::String>().Utf8Value();
-    
-    @autoreleasepool {
-        NSPasteboard *pb = [NSPasteboard generalPasteboard];
-        [pb clearContents];
-        
-        NSString *nsText = [NSString stringWithUTF8String:text.c_str()];
-        [pb setString:nsText forType:NSPasteboardTypeString];
-        [pb setString:@"" forType:@"org.nspasteboard.ConcealedType"];
-    }
-    return Napi::Boolean::New(env, true);
-}
+// Native Clipboard functions removed per Zero-Trust Protocol.
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "enableSecureInput"), Napi::Function::New(env, EnableProtection));
@@ -187,7 +169,6 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "wipe"), Napi::Function::New(env, Wipe));
     exports.Set(Napi::String::New(env, "drain"), Napi::Function::New(env, DrainPayload));
     exports.Set(Napi::String::New(env, "backspace"), Napi::Function::New(env, Backspace));
-    exports.Set(Napi::String::New(env, "concealedCopy"), Napi::Function::New(env, ConcealedCopy));
     exports.Set(Napi::String::New(env, "registerCallback"), Napi::Function::New(env, RegisterCallback));
     return exports;
 }

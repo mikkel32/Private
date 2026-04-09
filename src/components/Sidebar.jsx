@@ -10,6 +10,7 @@ export default function Sidebar({
   serverInfo,
   onOpenSettings,
   onPurgeData,
+  onExport,
 }) {
   return (
     <aside className="sidebar">
@@ -37,6 +38,14 @@ export default function Sidebar({
       </div>
 
       <div className="sidebar-footer">
+        <button 
+          className="export-action-btn" 
+          onClick={onExport}
+          title="Secure Vault Export (AES-256-GCM)"
+          style={{ width: '100%', padding: '10px', background: '#123010', color: '#4caf50', border: '1px solid #4caf5055', borderRadius: '6px', marginBottom: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '13px' }}
+        >
+          <span>🔐</span> Secure Export
+        </button>
         <button 
           className="danger-action-btn" 
           onClick={onPurgeData}

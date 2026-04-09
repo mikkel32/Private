@@ -158,8 +158,28 @@ export default function App() {
     setIsStreaming(false);
   }, []);
 
+  const [exportKeyUrl, setExportKeyUrl] = useState(null);
+
+  useEffect(() => {
+    if (!window.electronAPI) return;
+    window.electronAPI.onVaultExportKey((bufferArray) => {
+        // Transform the raw ArrayBuffer back to a local URL for the <img> tag
+        const blob = new Blob([new Uint8Array(bufferArray)], { type: 'image/png' });
+        const url = URL.createObjectURL(blob);
+        setExportKeyUrl(url);
+    });
+    return () => window.electronAPI.offVaultExportKey();
+  }, []);
+
+  const closeExportModal = useCallback(() => {
+      if (exportKeyUrl) {
+          URL.revokeObjectURL(exportKeyUrl);
+          setExportKeyUrl(null);
+      }
+  }, [exportKeyUrl]);
+
   return (
-    <div className="app-layout" style={{ filter: isBlurred ? "blur(100px)" : "none", transition: "filter 0.05s ease-in" }}>
+    <div className="app-layout" style={{ filter: isBlurred ? "blur(100px)" : "none", transition: "filter 0.05s ease-in", position: 'relative' }}>
       <Sidebar
         conversations={conversations}
         activeId={activeId}
@@ -169,6 +189,7 @@ export default function App() {
         serverInfo={serverInfo}
         onOpenSettings={() => setShowSettings(true)}
         onPurgeData={purgeAllData}
+        onExport={() => window.electronAPI.exportVault(activeId)}
       />
       <div className="chat-main">
         <StatsBar
@@ -192,6 +213,17 @@ export default function App() {
           onClose={() => setShowSettings(false)}
           serverInfo={serverInfo}
         />
+      )}
+      
+      {exportKeyUrl && (
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+             <div style={{ background: '#1e1e24', padding: '20px', borderRadius: '8px', border: '1px solid #4caf50', maxWidth: '80%', maxHeight: '80%', display: 'flex', flexDirection: 'column' }}>
+                 <h2 style={{ color: '#4caf50', margin: '0 0 10px 0', textAlign: 'center' }}>AES Vault Export Complete</h2>
+                 <p style={{ color: '#aaa', fontSize: '13px', textAlign: 'center', marginTop: 0 }}>The .enc file has been written to your Desktop. This is your ONLY chance to record the decryption password.</p>
+                 <img src={exportKeyUrl} alt="Decryption Key" style={{ maxWidth: '100%', maxHeight: '60vh', objectFit: 'contain', userSelect: 'none' }} draggable="false" />
+                 <button onClick={closeExportModal} style={{ marginTop: '20px', padding: '10px', background: '#333', color: '#fff', border: '1px solid #555', borderRadius: '4px', cursor: 'pointer' }}>I have secured the password</button>
+             </div>
+          </div>
       )}
     </div>
   );

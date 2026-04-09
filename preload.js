@@ -16,13 +16,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
   enableSecureInput: () => ipcRenderer.send("secure-enable"),
   disableSecureInput: () => ipcRenderer.send("secure-disable"),
   appendBuffer: (buffer) => ipcRenderer.send("secure-append", buffer),
-  concealedCopy: (text) => ipcRenderer.send("secure-concealed-copy", text),
   backspace: () => ipcRenderer.send("secure-backspace"),
   wipeVault: () => ipcRenderer.send("secure-wipe"),
   drainVault: () => ipcRenderer.invoke("secure-drain"),
   // Protocol Omega: Network Dispatch
   secureNetworkDispatch: (skeletonBuffer) => ipcRenderer.send("secure-network-dispatch", skeletonBuffer),
   fetchHistory: (id) => ipcRenderer.send("fetch-history", id),
+  exportVault: (id) => ipcRenderer.send("export-vault", id),
+  onVaultExportKey: (callback) => ipcRenderer.on("vault-export-key", (_, buffer) => callback(buffer)),
+  offVaultExportKey: () => ipcRenderer.removeAllListeners("vault-export-key"),
   
   // Natively routes raw Uint8Array from main.js directly. No Javascript Strings.
   onCanvasFrame: (callback) => ipcRenderer.on("secure-canvas-frame", (_, ptr) => callback(ptr)),
