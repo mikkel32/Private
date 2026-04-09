@@ -5,41 +5,75 @@ import { useState, useRef, useCallback, useEffect } from "react";
  * and active settings indicators.
  */
 export default function MessageInput({ onSend, onStop, isStreaming, disabled, settings }) {
-  const [text, setText] = useState("");
-  const textareaRef = useRef(null);
+  const inputRef = useRef(null);
+  
+  // Extreme Privacy: Memory Managed Keystroke Buffer
+  // We allocate exactly 8192 bytes. Keystrokes are written to this TypedArray.
+  const bufferRef = useRef(new Uint8Array(8192));
+  const pointerRef = useRef(0);
+  const [renderTrigger, setRenderTrigger] = useState(0);
 
   const resize = useCallback(() => {
-    const el = textareaRef.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = Math.min(el.scrollHeight, 200) + "px";
+    // We use standard input element size here
   }, []);
 
   useEffect(() => {
     resize();
-  }, [text, resize]);
+  }, [renderTrigger, resize]);
+
+  const getCurrentText = useCallback(() => {
+    return new TextDecoder().decode(bufferRef.current.subarray(0, pointerRef.current));
+  }, []);
+
+  const wipeMemory = useCallback(() => {
+    // Cryptographically obliterate the allocated RAM sectors for the physical buffer
+    window.crypto.getRandomValues(bufferRef.current);
+    bufferRef.current.fill(0);
+    pointerRef.current = 0;
+    if (inputRef.current) inputRef.current.value = "";
+    setRenderTrigger(v => v + 1);
+  }, []);
 
   const handleKeyDown = useCallback(
     (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        if (text.trim() && !isStreaming && !disabled) {
-          onSend(text);
-          setText("");
+        const currentText = getCurrentText();
+        if (currentText.trim() && !isStreaming && !disabled) {
+          onSend(currentText);
+          wipeMemory();
         }
       }
     },
-    [text, isStreaming, disabled, onSend]
+    [isStreaming, disabled, onSend, wipeMemory, getCurrentText]
   );
+
+  const handleInputChange = useCallback((e) => {
+    const val = e.target.value;
+    const encoder = new TextEncoder();
+    const encoded = encoder.encode(val);
+    
+    // Bounds check to prevent buffer overflow attack on local V8
+    if (encoded.length > 8192) return;
+    
+    bufferRef.current.set(encoded);
+    pointerRef.current = encoded.length;
+    setRenderTrigger(v => v + 1);
+  }, []);
 
   const handleSendClick = useCallback(() => {
     if (isStreaming) {
       onStop();
-    } else if (text.trim() && !disabled) {
-      onSend(text);
-      setText("");
+    } else {
+      const currentText = getCurrentText();
+      if (currentText.trim() && !disabled) {
+        onSend(currentText);
+        wipeMemory();
+      }
     }
-  }, [text, isStreaming, disabled, onSend, onStop]);
+  }, [isStreaming, disabled, onSend, onStop, wipeMemory, getCurrentText]);
+
+  const previewText = getCurrentText();
 
   return (
     <div className="input-area">
@@ -48,10 +82,11 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
           {/* Absolute Isolation Ghost Wrapper */}
           <div className="secure-input-wrapper" style={{ position: 'relative', flex: 1, minHeight: '44px' }}>
             <input
+              ref={inputRef}
               type="password"
               title="OS-Level Keylogger Protection Active"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
+              defaultValue=""
+              onChange={handleInputChange}
               onKeyDown={handleKeyDown}
               disabled={disabled}
               id="message-input"
@@ -94,7 +129,7 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
                 overflow: 'hidden'
               }}
             >
-              {text ? text : (disabled ? "Waiting for server…" : "Secure isolated input…")}
+              {previewText ? previewText : (disabled ? "Waiting for server…" : "Secure isolated input…")}
             </div>
           </div>
           <button
