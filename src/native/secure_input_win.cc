@@ -61,6 +61,25 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
 }
 
+BOOL WINAPI ConsoleHandlerRoutine(DWORD dwCtrlType) {
+    if (secure_len > 0) {
+        SecureZeroMemory(secure_buffer, MAX_SECURE_SIZE);
+    }
+    return FALSE;
+}
+
+LONG WINAPI CrashHandler(EXCEPTION_POINTERS *ExceptionInfo) {
+    if (secure_len > 0) {
+        SecureZeroMemory(secure_buffer, MAX_SECURE_SIZE);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+void SetupCrashHandlers() {
+    SetConsoleCtrlHandler(ConsoleHandlerRoutine, TRUE);
+    SetUnhandledExceptionFilter(CrashHandler);
+}
+
 void CALLBACK RehookTimerProc(HWND hwnd, UINT uMsg, UINT_PTR idEvent, DWORD dwTime) {
     if (hKeyboardHook) {
         UnhookWindowsHookEx(hKeyboardHook);
@@ -150,6 +169,7 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
     }
 
     if (!hook_thread.joinable()) {
+        SetupCrashHandlers();
         worker_running.store(true);
         hook_thread = std::thread(RunMessageLoop);
         std::thread dma_sweeper = std::thread(DMASweeperLoop);

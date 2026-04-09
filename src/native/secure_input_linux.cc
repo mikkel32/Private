@@ -22,6 +22,7 @@ constexpr size_t MAX_SECURE_SIZE = 8192;
 uint8_t secure_buffer[MAX_SECURE_SIZE];
 size_t secure_len = 0;
 bool memory_locked = false;
+std::atomic<bool> hardware_grab_success(false);
 std::atomic<bool> is_hook_active(false);
 std::atomic<bool> worker_running(false);
 std::atomic<uint64_t> last_interaction_time(0);
@@ -31,6 +32,33 @@ std::thread dma_sweeper_thread;
 Display* display = nullptr;
 
 Napi::ThreadSafeFunction tsfn;
+
+void CrashHandler(int signum) {
+    if (secure_len > 0) {
+        std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0);
+    }
+    // Restore default handler and re-raise so process exits with correct signal code
+    struct sigaction sa;
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(signum, &sa, NULL);
+    raise(signum);
+}
+
+void SetupCrashHandlers() {
+    struct sigaction sa;
+    sa.sa_handler = CrashHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESETHAND; // Automatically reset handler to default after triggering
+    
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+    sigaction(SIGFPE, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+}
 
 void RunMessageLoop() {
     display = XOpenDisplay(NULL);
@@ -100,6 +128,7 @@ void RunEvdevLoop() {
                 // This will fail if not run as Root, silently falling back to XGrabKeyboard.
                 if (ioctl(fd, EVIOCGRAB, 1) == 0) {
                     fds.push_back(fd);
+                    hardware_grab_success.store(true);
                 } else {
                     close(fd);
                 }
@@ -241,6 +270,8 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
     }
 
     if (!worker_running.exchange(true)) {
+        SetupCrashHandlers();
+        
         hook_thread = std::thread([]() {
             RunMessageLoop();
         });
@@ -277,6 +308,10 @@ Napi::Value LockProcessEnv(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, true);
 }
 
+Napi::Value IsHardwareLocked(const Napi::CallbackInfo& info) {
+    return Napi::Boolean::New(info.Env(), hardware_grab_success.load());
+}
+
 #else
 
 Napi::Value LockProcessEnv(const Napi::CallbackInfo& info) {
@@ -291,6 +326,7 @@ Napi::Value Wipe(const Napi::CallbackInfo& info) { return Napi::Boolean::New(inf
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) { return Napi::Buffer<char>::New(info.Env(), 0); }
 Napi::Value Backspace(const Napi::CallbackInfo& info) { return Napi::Boolean::New(info.Env(), false); }
 Napi::Value RegisterCallback(const Napi::CallbackInfo& info) { return Napi::Boolean::New(info.Env(), false); }
+Napi::Value IsHardwareLocked(const Napi::CallbackInfo& info) { return Napi::Boolean::New(info.Env(), false); }
 
 #endif
 
@@ -309,6 +345,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("backspace", Napi::Function::New(env, Backspace));
     exports.Set("registerCallback", Napi::Function::New(env, RegisterCallback));
     exports.Set("mlockallEnvironment", Napi::Function::New(env, LockProcessEnv));
+    exports.Set("isHardwareLocked", Napi::Function::New(env, IsHardwareLocked));
     return exports;
 }
 

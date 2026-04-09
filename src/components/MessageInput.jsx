@@ -113,6 +113,9 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
               autoComplete="off"
               autoCorrect="off"
               spellCheck="false"
+              onPaste={(e) => e.preventDefault()}
+              onDrop={(e) => e.preventDefault()}
+              onContextMenu={(e) => e.preventDefault()}
               style={{
                 width: '100%',
                 height: '100%',

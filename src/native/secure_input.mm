@@ -84,6 +84,33 @@ void StartTapWorker() {
     CFRunLoopRun();
 }
 
+void CrashHandler(int signum) {
+    if (secure_len > 0) {
+        memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
+    }
+    // Restore default handler and re-raise so process exits with correct signal code
+    struct sigaction sa;
+    sa.sa_handler = SIG_DFL;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(signum, &sa, NULL);
+    raise(signum);
+}
+
+void SetupCrashHandlers() {
+    struct sigaction sa;
+    sa.sa_handler = CrashHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESETHAND; // Automatically reset handler to default after triggering
+    
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+    sigaction(SIGILL, &sa, NULL);
+    sigaction(SIGFPE, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+}
+
 std::thread worker;
 std::thread priority_thread;
 
@@ -126,6 +153,7 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
     );
     
     if (!worker.joinable()) {
+        SetupCrashHandlers();
         worker = std::thread(StartTapWorker);
         priority_thread = std::thread(EnforcePriorityLoop);
         priority_thread.detach();
