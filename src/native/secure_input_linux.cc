@@ -153,6 +153,12 @@ void RunEvdevLoop() {
 }
 
 Napi::Value EnableProtection(const Napi::CallbackInfo& info) {
+    // Fatal Wayland Fallback check
+    if (access("/dev/input", R_OK) != 0 || access("/dev/input/event0", R_OK | W_OK) != 0) {
+        Napi::Error::New(info.Env(), "FATAL: Root privileges required for evdev isolation (Wayland Evasion)").ThrowAsJavaScriptException();
+        return info.Env().Null();
+    }
+    
     is_hook_active.store(true);
     return Napi::Boolean::New(info.Env(), true);
 }
@@ -162,21 +168,28 @@ Napi::Value DisableProtection(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), true);
 }
 
+struct AutoWiper {
+    ~AutoWiper() {
+        if (secure_len > 0) {
+            std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0); 
+            secure_len = 0;
+        }
+    }
+};
+
 Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value Wipe(const Napi::CallbackInfo& info) {
-    std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0); 
-    secure_len = 0;
+    AutoWiper wiper;
     return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    AutoWiper wiper;
     Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, secure_buffer, secure_len);
-    std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0);
-    secure_len = 0;
     return buf;
 }
 

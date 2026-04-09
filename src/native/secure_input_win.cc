@@ -78,17 +78,24 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), true);
 }
 
+struct AutoWiper {
+    ~AutoWiper() {
+        if (secure_len > 0) {
+            SecureZeroMemory(secure_buffer, MAX_SECURE_SIZE);
+            secure_len = 0;
+        }
+    }
+};
+
 Napi::Value Wipe(const Napi::CallbackInfo& info) {
-    SecureZeroMemory(secure_buffer, MAX_SECURE_SIZE);
-    secure_len = 0;
+    AutoWiper wiper;
     return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    AutoWiper wiper;
     Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, secure_buffer, secure_len);
-    SecureZeroMemory(secure_buffer, MAX_SECURE_SIZE);
-    secure_len = 0;
     return buf;
 }
 

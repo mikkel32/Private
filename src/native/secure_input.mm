@@ -141,26 +141,27 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, true);
 }
 
+struct AutoWiper {
+    ~AutoWiper() {
+        if (secure_len > 0) {
+            memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
+            secure_len = 0;
+        }
+    }
+};
+
 // Empties the vector directly using memset_s to prevent dead-store elimination
 Napi::Value Wipe(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    if (secure_len > 0) {
-        memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
-    }
-    secure_len = 0;
+    AutoWiper wiper; // Will wipe instantly upon return or exception
     return Napi::Boolean::New(env, true);
 }
 
 // Copies the vault over into V8 for exactly one operation (network payload dispatch)
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+    AutoWiper wiper; // Guarantee memory wipe even if Napi Buffer copy throws exception
     Napi::Buffer<char> buffer = Napi::Buffer<char>::Copy(env, secure_buffer, secure_len);
-    
-    // Instantly wipe physical memory after copying to V8 instance
-    if (secure_len > 0) {
-        memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
-    }
-    secure_len = 0;
     
     return buffer;
 }
