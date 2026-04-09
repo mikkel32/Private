@@ -71,7 +71,7 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value Wipe(const Napi::CallbackInfo& info) {
-    std::fill(secure_buffer.begin(), secure_buffer.end(), 0);
+    SecureZeroMemory(secure_buffer.data(), secure_buffer.size());
     secure_buffer.clear();
     return Napi::Boolean::New(info.Env(), true);
 }
@@ -79,7 +79,7 @@ Napi::Value Wipe(const Napi::CallbackInfo& info) {
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, secure_buffer.data(), secure_buffer.size());
-    std::fill(secure_buffer.begin(), secure_buffer.end(), 0);
+    SecureZeroMemory(secure_buffer.data(), secure_buffer.size());
     secure_buffer.clear();
     return buf;
 }

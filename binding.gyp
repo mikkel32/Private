@@ -31,7 +31,8 @@
           }
         }],
         ["OS=='linux'", {
-          "sources": [ "src/native/secure_input_linux.cc" ]
+          "sources": [ "src/native/secure_input_linux.cc" ],
+          "libraries": [ "-lX11" ]
         }]
       ]
     }

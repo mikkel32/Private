@@ -59,84 +59,89 @@ ipcMain.handle("secure-drain", async () => {
 });
 
 // Protocol Omega: Remote Splice and Dispatch
-ipcMain.on("secure-network-dispatch", (event, skeletonBuffer) => {
-  fs.appendFileSync("ipc-debug.log", "Received secure-network-dispatch\n");
-  if (!secureInput) return fs.appendFileSync("ipc-debug.log", "secureInput is null\n");
+ipcMain.on("secure-network-dispatch", (event, configObj) => {
+  if (!secureInput) return;
 
   try {
-    fs.appendFileSync("ipc-debug.log", `Attempting to drain...\n`);
     const rawSecretBuffer = secureInput.drain(); 
-    if (!rawSecretBuffer) return fs.appendFileSync("ipc-debug.log", `rawSecretBuffer is empty\n`);
+    if (!rawSecretBuffer) return;
 
-    // Buffer is a Node primitive, it avoids V8 Immutable String generation
-    const skeleton = Buffer.from(skeletonBuffer);
     const secret = Buffer.from(rawSecretBuffer);
+    const convIdBuf = Buffer.from(configObj.conversation_id || "default", "utf-8");
 
-    fs.appendFileSync("ipc-debug.log", `Skeleton length: ${skeleton.length}, Secret length: ${secret.length}\n`);
+    // Format: 
+    // uint8 enable_thinking 
+    // uint32 thinking_budget 
+    // uint32 max_tokens 
+    // double temperature 
+    // double top_p 
+    // uint32 convId_len, convId Buf
+    // uint32 secret_len, secret Buf
+    
+    // Size = 1 + 4 + 4 + 8 + 8 + 4 + convIdBuf.length + 4 + secret.length
+    const fixedAllocSize = 1 + 4 + 4 + 8 + 8 + 4 + 4;
+    const finalPayload = Buffer.alloc(fixedAllocSize + convIdBuf.length + secret.length);
+    
+    let offset = 0;
+    finalPayload.writeUInt8(configObj.enable_thinking, offset); offset += 1;
+    finalPayload.writeUInt32BE(configObj.thinking_budget, offset); offset += 4;
+    finalPayload.writeUInt32BE(configObj.max_tokens, offset); offset += 4;
+    finalPayload.writeDoubleBE(configObj.temperature, offset); offset += 8;
+    finalPayload.writeDoubleBE(configObj.top_p, offset); offset += 8;
+    
+    finalPayload.writeUInt32BE(convIdBuf.length, offset); offset += 4;
+    convIdBuf.copy(finalPayload, offset); offset += convIdBuf.length;
+    
+    finalPayload.writeUInt32BE(secret.length, offset); offset += 4;
+    secret.copy(finalPayload, offset); offset += secret.length;
 
-    const anchorText = "<|SECURE_INJECT|>";
-    const index = skeleton.indexOf(anchorText);
-
-    if (index !== -1) {
-      const part1 = skeleton.slice(0, index);
-      const part2 = skeleton.slice(index + anchorText.length);
-      const finalPayload = Buffer.concat([part1, secret, part2]);
-
-      fs.appendFileSync("ipc-debug.log", `Payload constructed. Sending POST request to backend...\n`);
-
-      const req = net.request({
-        url: "https://127.0.0.1:8420/v1/chat/stream_canvas",
-        method: 'POST',
-      });
-      req.setHeader('Content-Type', 'application/json');
+    const req = net.request({
+      url: "https://127.0.0.1:8420/v1/chat/stream_canvas",
+      method: 'POST',
+    });
+    req.setHeader('Content-Type', 'application/octet-stream');
+    
+    req.on('response', (res) => {
+      if (res.statusCode !== 200) {
+        return event.sender.send("secure-stream-end");
+      }
+      let currentBuffer = Buffer.alloc(0);
       
-      req.on('response', (res) => {
-        fs.appendFileSync("ipc-debug.log", `stream_canvas response: ${res.statusCode}\n`);
-        if (res.statusCode !== 200) {
-          res.on('data', d => fs.appendFileSync("ipc-debug.log", `stream_canvas ERROR: ${d}\n`));
-          return event.sender.send("secure-stream-end");
-        }
-        let currentBuffer = Buffer.alloc(0);
-        
-        res.on('data', (chunk) => {
-           currentBuffer = Buffer.concat([currentBuffer, chunk]);
-           
-           // Extract PNG chunks natively in C++ via Buffer length parsing
-           while (currentBuffer.length >= 4) {
-               const len = currentBuffer.readUInt32BE(0);
-               if (currentBuffer.length >= 4 + len) {
-                   const pngData = currentBuffer.slice(4, 4 + len);
-                   currentBuffer = currentBuffer.slice(4 + len);
-                   // Fire raw Uint8Array over IPC boundary directly to Canvas API
-                   event.sender.send("secure-canvas-frame", pngData);
-               } else {
-                   break;
-               }
-           }
-        });
-        res.on('end', () => {
-           event.sender.send("secure-stream-end");
-        });
-        res.on('error', (err) => {
-           console.error("Stream Error", err);
-           event.sender.send("secure-stream-end");
-        });
+      res.on('data', (chunk) => {
+         currentBuffer = Buffer.concat([currentBuffer, chunk]);
+         
+         while (currentBuffer.length >= 4) {
+             const len = currentBuffer.readUInt32BE(0);
+             if (currentBuffer.length >= 4 + len) {
+                 const pngData = currentBuffer.slice(4, 4 + len);
+                 currentBuffer = currentBuffer.slice(4 + len);
+                 event.sender.send("secure-canvas-frame", pngData);
+             } else {
+                 break;
+             }
+         }
       });
-
-      req.on('error', (err) => {
-        console.error("Network Error", err);
-        event.sender.send("secure-stream-end");
+      res.on('end', () => {
+         event.sender.send("secure-stream-end");
       });
+      res.on('error', (err) => {
+         console.error("Stream Error", err);
+         event.sender.send("secure-stream-end");
+      });
+    });
 
-      req.end(finalPayload);
+    req.on('error', (err) => {
+      console.error("Network Error", err);
+      event.sender.send("secure-stream-end");
+    });
 
-      // Natively wipe completely before passing control back to GC
-      finalPayload.fill(0);
-      skeleton.fill(0);
-      part1.fill(0);
-      part2.fill(0);
-      secret.fill(0);
-    }
+    req.end(finalPayload);
+
+    // Natively wipe completely before passing control back to GC
+    finalPayload.fill(0);
+    secret.fill(0);
+    convIdBuf.fill(0);
+    
   } catch (err) {
     console.error("Splice error:", err);
   }

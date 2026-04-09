@@ -118,19 +118,14 @@ export default function App() {
       abortRef.current = controller;
 
       try {
-        const payloadObj = {
+        const configObj = {
           conversation_id: convId,
-          message: userMessage,
-          stream: true,
           max_tokens: settings.maxTokens,
           temperature: settings.temperature,
           top_p: settings.topP,
-          enable_thinking: settings.enableThinking,
+          enable_thinking: settings.enableThinking ? 1 : 0,
           thinking_budget: settings.thinkingBudget,
         };
-
-        const jsonString = JSON.stringify(payloadObj);
-        const skeletonBuffer = new TextEncoder().encode(jsonString);
 
         window.electronAPI.offStreamEvents();
 
@@ -142,7 +137,7 @@ export default function App() {
            window.electronAPI.offStreamEvents();
         });
 
-        window.electronAPI.secureNetworkDispatch(skeletonBuffer);
+        window.electronAPI.secureNetworkDispatch(configObj);
 
       } catch (err) {
         setIsStreaming(false);

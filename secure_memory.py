@@ -45,6 +45,30 @@ class SecureMemoryVault:
             
         return messages
 
+    def append_message_binary(self, conv_id: bytes, role: bytes, content: bytes):
+        """ Appends pure binary data streams into the vault bypassing all string evaluation primitives """
+        block = bytearray()
+        block.extend(len(role).to_bytes(4, 'big'))
+        block.extend(role)
+        block.extend(len(content).to_bytes(4, 'big'))
+        block.extend(content)
+        
+        cid = conv_id.decode('utf-8') # conv_id is allowed to be str since it's non-secret routing ID
+        
+        if cid in self.buffers:
+            old_buf = self.buffers[cid]
+            new_buf = bytearray(len(old_buf) + len(block))
+            new_buf[:len(old_buf)] = old_buf
+            new_buf[len(old_buf):] = block
+            
+            for i in range(len(old_buf)): old_buf[i] = 0
+                
+            self._mlock(new_buf)
+            self.buffers[cid] = new_buf
+        else:
+            self._mlock(block)
+            self.buffers[cid] = block
+
     def append_message(self, conv_id: str, role: str, content: str):
         """ Appends structural data directly into physical bytearray using ctypes byte-by-byte copies to evade GC heap string tracking """
         import ctypes

@@ -400,22 +400,47 @@ async def stream_canvas(request: Request):
     Dumps all strings across IPC. Exclusively emits `Uint8Array` binary blocks containing complete PNG frames
     for direct HTML5 <canvas> instantiation to avoid V8 Memory Leaks.
     """
-    # Using JSON loads only in Python backend!
-    body = await request.json()
-    conv_id = body.get("conversation_id", "default")
-    new_message = body.get("message", None)  # {"role": "user", "content": "hello"}
+    import struct
+    body = await request.body()
     
-    # Securely append to Mlocked vault!
-    history = vault.get_history(conv_id)
-    if not history and new_message:
-         vault.append_message(conv_id, "system", "You are a secure assistant. Respond clearly.")
+    if len(body) < 29:
+        return StreamingResponse(iter([]), status_code=400)
+    
+    # Binary parse:
+    # 1: uint8 enable_thinking
+    # 4: uint32 thinking_budget
+    # 4: uint32 max_tokens
+    # 8: double temperature
+    # 8: double top_p
+    # 4: uint32 convId_len
+    header_fmt = "!BIIddI"
+    header_sz = struct.calcsize(header_fmt)
+    
+    enable_thinking_b, thinking_budget, max_tokens, temperature, top_p, convId_len = struct.unpack_from(header_fmt, body, 0)
+    enable_thinking = bool(enable_thinking_b)
+    
+    offset = header_sz
+    conv_id_bytes = body[offset:offset+convId_len]
+    offset += convId_len
+    
+    if offset + 4 > len(body):
+        return StreamingResponse(iter([]), status_code=400)
+        
+    secret_len = struct.unpack_from("!I", body, offset)[0]
+    offset += 4
+    secret_bytes = body[offset:offset+secret_len]
+    
+    conv_id_str = conv_id_bytes.decode('utf-8')
+    
+    # Securely append to Mlocked vault directly in binary!
+    history = vault.get_history(conv_id_str)
+    if not history and secret_bytes:
+         vault.append_message(conv_id_str, "system", "You are a secure assistant. Respond clearly.")
          
-    if new_message:
-         vault.append_message(conv_id, new_message["role"], new_message["content"])
-         history = vault.get_history(conv_id) # Refresh history containing the user message
+    if secret_bytes:
+         vault.append_message_binary(conv_id_bytes, b"user", secret_bytes)
+         history = vault.get_history(conv_id_str)
     
-    enable_thinking = body.get("enable_thinking", True)
-    thinking_budget = body.get("thinking_budget", 1024)
     processed_messages = inject_thinking(history, enable_thinking, thinking_budget)
     
     model = get_model()
@@ -423,9 +448,9 @@ async def stream_canvas(request: Request):
     async def generate_binary() -> AsyncGenerator[bytes, None]:
         response_stream = model.create_chat_completion(
             messages=processed_messages,
-            max_tokens=2048,
-            temperature=0.7,
-            top_p=0.9,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
             stream=True,
         )
 
@@ -453,7 +478,7 @@ async def stream_canvas(request: Request):
                 yield length_prefix + png_bytes
                 
                 # Append to secure vault
-                vault.append_message(conv_id, "assistant", full_content)
+                vault.append_message(conv_id_str, "assistant", full_content)
             
         except Exception as e:
             full_content += f"\n\n[System Error: {str(e)}]"

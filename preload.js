@@ -20,7 +20,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   wipeVault: () => ipcRenderer.send("secure-wipe"),
   drainVault: () => ipcRenderer.invoke("secure-drain"),
   // Protocol Omega: Network Dispatch
-  secureNetworkDispatch: (skeletonBuffer) => ipcRenderer.send("secure-network-dispatch", skeletonBuffer),
+  secureNetworkDispatch: (configObj) => ipcRenderer.send("secure-network-dispatch", configObj),
   fetchHistory: (id) => ipcRenderer.send("fetch-history", id),
   exportVault: (id) => ipcRenderer.send("export-vault", id),
   onVaultExportKey: (callback) => ipcRenderer.on("vault-export-key", (_, buffer) => callback(buffer)),
