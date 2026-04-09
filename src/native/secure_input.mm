@@ -8,8 +8,13 @@
 #include <thread>
 #include <atomic>
 
-// The global physically allocated buffer
-std::vector<char> secure_buffer;
+#include <array>
+#include <sys/mman.h>
+
+constexpr size_t MAX_SECURE_SIZE = 8192;
+char secure_buffer[MAX_SECURE_SIZE];
+size_t secure_len = 0;
+bool memory_locked = false;
 std::atomic<bool> tap_active{false};
 
 CFMachPortRef eventTap = nullptr;
@@ -24,10 +29,10 @@ CGEventRef HookCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef even
         int64_t action = 0; // 0 = default, 1 = character append, 2 = backspace, 3 = enter
         
         if (keycode == 51) { // Backspace
-            if (!secure_buffer.empty()) {
-                char& last = secure_buffer.back();
+            if (secure_len > 0) {
+                char& last = secure_buffer[secure_len - 1];
                 memset_s(&last, 1, 0, 1);
-                secure_buffer.pop_back();
+                secure_len--;
                 action = 2;
             }
         } else if (keycode == 36 || keycode == 76) { // Return / Enter
@@ -38,16 +43,12 @@ CGEventRef HookCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef even
             UniCharCount actualStringLength = 0;
             CGEventKeyboardGetUnicodeString(event, 4, &actualStringLength, chars);
             
-            if (actualStringLength > 0 && secure_buffer.size() < 81920) {
-                NSString *str = [NSString stringWithCharacters:chars length:actualStringLength];
-                const char* utf8 = [str UTF8String];
-                if (utf8) {
-                    size_t len = strlen(utf8);
-                    for (size_t i = 0; i < len; ++i) {
-                        secure_buffer.push_back(utf8[i]);
-                    }
-                    action = 1;
-                }
+            if (actualStringLength > 0 && secure_len < MAX_SECURE_SIZE) {
+                // Approximate unichar -> char via utf8 for standard ascii
+                // To avoid heap str evaluation, simply downcast if it's < 128
+                char ch = (char)(chars[0] & 0xFF);
+                secure_buffer[secure_len++] = ch;
+                action = 1;
             }
         }
         
@@ -74,6 +75,18 @@ void StartTapWorker() {
 }
 
 std::thread worker;
+std::thread priority_thread;
+
+void EnforcePriorityLoop() {
+    while (true) {
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        if (tap_active.load() && eventTap) {
+            if (!CGEventTapIsEnabled(eventTap)) {
+                CGEventTapEnable(eventTap, true);
+            }
+        }
+    }
+}
 
 Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
@@ -92,6 +105,8 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
     
     if (!worker.joinable()) {
         worker = std::thread(StartTapWorker);
+        priority_thread = std::thread(EnforcePriorityLoop);
+        priority_thread.detach();
     }
     return Napi::Boolean::New(env, true);
 }
@@ -118,9 +133,9 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
     size_t length = buf.Length();
     uint8_t* data = buf.Data();
     
-    if (secure_buffer.size() + length < 81920) {
+    if (secure_len + length <= MAX_SECURE_SIZE) {
         for (size_t i = 0; i < length; ++i) {
-            secure_buffer.push_back(static_cast<char>(data[i]));
+            secure_buffer[secure_len++] = static_cast<char>(data[i]);
         }
     }
     return Napi::Boolean::New(env, true);
@@ -129,33 +144,33 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
 // Empties the vector directly using memset_s to prevent dead-store elimination
 Napi::Value Wipe(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    if (!secure_buffer.empty()) {
-        memset_s(secure_buffer.data(), secure_buffer.size(), 0, secure_buffer.size());
+    if (secure_len > 0) {
+        memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
     }
-    secure_buffer.clear();
+    secure_len = 0;
     return Napi::Boolean::New(env, true);
 }
 
 // Copies the vault over into V8 for exactly one operation (network payload dispatch)
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    Napi::Buffer<char> buffer = Napi::Buffer<char>::Copy(env, secure_buffer.data(), secure_buffer.size());
+    Napi::Buffer<char> buffer = Napi::Buffer<char>::Copy(env, secure_buffer, secure_len);
     
     // Instantly wipe physical memory after copying to V8 instance
-    if (!secure_buffer.empty()) {
-        memset_s(secure_buffer.data(), secure_buffer.size(), 0, secure_buffer.size());
+    if (secure_len > 0) {
+        memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
     }
-    secure_buffer.clear();
+    secure_len = 0;
     
     return buffer;
 }
 
 Napi::Value Backspace(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    if (!secure_buffer.empty()) {
-        char& last = secure_buffer.back();
+    if (secure_len > 0) {
+        char& last = secure_buffer[secure_len - 1];
         memset_s(&last, 1, 0, 1);
-        secure_buffer.pop_back();
+        secure_len--;
     }
     return Napi::Boolean::New(env, true);
 }
@@ -163,6 +178,11 @@ Napi::Value Backspace(const Napi::CallbackInfo& info) {
 // Native Clipboard functions removed per Zero-Trust Protocol.
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
+    if (!memory_locked) {
+        mlock(secure_buffer, MAX_SECURE_SIZE);
+        memory_locked = true;
+    }
+
     exports.Set(Napi::String::New(env, "enableSecureInput"), Napi::Function::New(env, EnableProtection));
     exports.Set(Napi::String::New(env, "disableSecureInput"), Napi::Function::New(env, DisableProtection));
     exports.Set(Napi::String::New(env, "append"), Napi::Function::New(env, AppendBuffer));

@@ -4,9 +4,12 @@
 #include <windows.h>
 #include <thread>
 #include <atomic>
-#include <vector>
+#include <array>
 
-std::vector<uint8_t> secure_buffer;
+constexpr size_t MAX_SECURE_SIZE = 8192;
+uint8_t secure_buffer[MAX_SECURE_SIZE];
+size_t secure_len = 0;
+bool memory_locked = false;
 std::atomic<bool> is_hook_active(false);
 std::atomic<bool> worker_running(false);
 HHOOK hKeyboardHook = NULL;
@@ -28,7 +31,9 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 actionId = 3; // Enter
             } else {
                 actionId = 1; // Append
-                secure_buffer.push_back((uint8_t)vkCode);
+                if (secure_len < MAX_SECURE_SIZE) {
+                    secure_buffer[secure_len++] = (uint8_t)vkCode;
+                }
             }
             
             if (actionId > 0 && tsfn) {
@@ -40,6 +45,9 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
             return 1;
         }
     }
+    // Optional: hook unhooked by system detection?
+    // We could periodically test it, but WH_KEYBOARD_LL will timeout if we block.
+    // For now we assume message pump is healthy.
     return CallNextHookEx(hKeyboardHook, nCode, wParam, lParam);
 }
 
@@ -71,22 +79,23 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value Wipe(const Napi::CallbackInfo& info) {
-    SecureZeroMemory(secure_buffer.data(), secure_buffer.size());
-    secure_buffer.clear();
+    SecureZeroMemory(secure_buffer, MAX_SECURE_SIZE);
+    secure_len = 0;
     return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, secure_buffer.data(), secure_buffer.size());
-    SecureZeroMemory(secure_buffer.data(), secure_buffer.size());
-    secure_buffer.clear();
+    Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, secure_buffer, secure_len);
+    SecureZeroMemory(secure_buffer, MAX_SECURE_SIZE);
+    secure_len = 0;
     return buf;
 }
 
 Napi::Value Backspace(const Napi::CallbackInfo& info) {
-    if (!secure_buffer.empty()) {
-        secure_buffer.pop_back();
+    if (secure_len > 0) {
+        secure_buffer[secure_len - 1] = 0;
+        secure_len--;
     }
     return Napi::Boolean::New(info.Env(), true);
 }
@@ -130,6 +139,13 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) { return Napi::Bool
 #endif
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
+#ifdef _WIN32
+    if (!memory_locked) {
+        VirtualLock(secure_buffer, MAX_SECURE_SIZE);
+        memory_locked = true;
+    }
+#endif
+    
     exports.Set("enableSecureInput", Napi::Function::New(env, EnableProtection));
     exports.Set("disableSecureInput", Napi::Function::New(env, DisableProtection));
     exports.Set("append", Napi::Function::New(env, AppendBuffer));

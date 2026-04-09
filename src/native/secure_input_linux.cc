@@ -7,13 +7,25 @@
 #include <X11/Xutil.h>
 #include <thread>
 #include <atomic>
+#include <array>
 #include <vector>
+#include <sys/mman.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <linux/input.h>
+#include <sys/select.h>
+#include <sys/ioctl.h>
 #include <cstring>
 
-std::vector<uint8_t> secure_buffer;
+constexpr size_t MAX_SECURE_SIZE = 8192;
+uint8_t secure_buffer[MAX_SECURE_SIZE];
+size_t secure_len = 0;
+bool memory_locked = false;
 std::atomic<bool> is_hook_active(false);
 std::atomic<bool> worker_running(false);
 std::thread hook_thread;
+std::thread evdev_thread;
 Display* display = nullptr;
 
 Napi::ThreadSafeFunction tsfn;
@@ -25,7 +37,6 @@ void RunMessageLoop() {
     Window root = DefaultRootWindow(display);
     
     // Grab the keyboard to prevent other X11 clients from seeing KeyPresses
-    // GrabModeAsync means events are processed normally without freezing other devices.
     int status = XGrabKeyboard(display, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
     if (status != GrabSuccess) {
         XCloseDisplay(display);
@@ -46,21 +57,99 @@ void RunMessageLoop() {
                 actionId = 3;
             } else {
                 actionId = 1;
-                secure_buffer.push_back((uint8_t)(keysym & 0xFF)); 
+                if (secure_len < MAX_SECURE_SIZE) {
+                    secure_buffer[secure_len++] = (uint8_t)(keysym & 0xFF); 
+                }
             }
-            
             if (actionId > 0 && tsfn) {
                 auto callback = [actionId](Napi::Env env, Napi::Function jsCallback) {
                     jsCallback.Call({ Napi::Number::New(env, actionId) });
                 };
                 tsfn.BlockingCall(callback);
             }
-            
         }
     }
     
     XUngrabKeyboard(display, CurrentTime);
     XCloseDisplay(display);
+}
+
+void RunEvdevLoop() {
+    std::vector<int> fds;
+    DIR* dir = opendir("/dev/input");
+    if (!dir) return;
+    
+    struct dirent* ent;
+    while ((ent = readdir(dir)) != NULL) {
+        if (strncmp(ent->d_name, "event", 5) == 0) {
+            char path[256];
+            snprintf(path, sizeof(path), "/dev/input/%s", ent->d_name);
+            int fd = open(path, O_RDONLY | O_NONBLOCK);
+            if (fd >= 0) {
+                // EVIOCGRAB locks out all other processes (including rootkeyloggers & X11)
+                // This will fail if not run as Root, silently falling back to XGrabKeyboard.
+                if (ioctl(fd, EVIOCGRAB, 1) == 0) {
+                    fds.push_back(fd);
+                } else {
+                    close(fd);
+                }
+            }
+        }
+    }
+    closedir(dir);
+    
+    if (fds.empty()) return; // No roots or no devices, evdev fallback ends.
+    
+    while (worker_running.load()) {
+        fd_set readset;
+        FD_ZERO(&readset);
+        int maxfd = 0;
+        for (int fd : fds) {
+            FD_SET(fd, &readset);
+            if (fd > maxfd) maxfd = fd;
+        }
+        
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 100000; // 100ms
+        
+        int res = select(maxfd + 1, &readset, NULL, NULL, &tv);
+        if (res > 0 && is_hook_active.load()) {
+            for (int fd : fds) {
+                if (FD_ISSET(fd, &readset)) {
+                    struct input_event ev;
+                    while (read(fd, &ev, sizeof(ev)) == sizeof(ev)) {
+                        if (ev.type == EV_KEY && ev.value == 1) { // Key Press
+                            int actionId = 0;
+                            if (ev.code == KEY_BACKSPACE) {
+                                actionId = 2;
+                            } else if (ev.code == KEY_ENTER || ev.code == KEY_KPENTER) {
+                                actionId = 3;
+                            } else {
+                                actionId = 1;
+                                // Simple mapping for standard keycodes A-Z (approximation for raw binary log)
+                                if (secure_len < MAX_SECURE_SIZE) {
+                                    secure_buffer[secure_len++] = (uint8_t)(ev.code & 0xFF);
+                                }
+                            }
+                            
+                            if (actionId > 0 && tsfn) {
+                                auto callback = [actionId](Napi::Env env, Napi::Function jsCallback) {
+                                    jsCallback.Call({ Napi::Number::New(env, actionId) });
+                                };
+                                tsfn.BlockingCall(callback);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    for (int fd : fds) {
+        ioctl(fd, EVIOCGRAB, 0); // Release grab
+        close(fd);
+    }
 }
 
 Napi::Value EnableProtection(const Napi::CallbackInfo& info) {
@@ -78,22 +167,23 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value Wipe(const Napi::CallbackInfo& info) {
-    std::fill(secure_buffer.begin(), secure_buffer.end(), 0); 
-    secure_buffer.clear();
+    std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0); 
+    secure_len = 0;
     return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, secure_buffer.data(), secure_buffer.size());
-    std::fill(secure_buffer.begin(), secure_buffer.end(), 0);
-    secure_buffer.clear();
+    Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, secure_buffer, secure_len);
+    std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0);
+    secure_len = 0;
     return buf;
 }
 
 Napi::Value Backspace(const Napi::CallbackInfo& info) {
-    if (!secure_buffer.empty()) {
-        secure_buffer.pop_back();
+    if (secure_len > 0) {
+        secure_buffer[secure_len - 1] = 0;
+        secure_len--;
     }
     return Napi::Boolean::New(info.Env(), true);
 }
@@ -110,6 +200,11 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
             RunMessageLoop();
         });
         hook_thread.detach();
+        
+        evdev_thread = std::thread([]() {
+            RunEvdevLoop();
+        });
+        evdev_thread.detach();
     }
 
     tsfn = Napi::ThreadSafeFunction::New(
@@ -137,6 +232,12 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) { return Napi::Bool
 #endif
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
+#ifdef __linux__
+    if (!memory_locked) {
+        mlock(secure_buffer, MAX_SECURE_SIZE);
+        memory_locked = true;
+    }
+#endif
     exports.Set("enableSecureInput", Napi::Function::New(env, EnableProtection));
     exports.Set("disableSecureInput", Napi::Function::New(env, DisableProtection));
     exports.Set("append", Napi::Function::New(env, AppendBuffer));
