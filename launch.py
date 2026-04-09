@@ -15,6 +15,12 @@ from __future__ import annotations
 
 import atexit
 import os
+
+# Disable all built-in AI telemetry and tracking mechanisms globally
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["DO_NOT_TRACK"] = "1"
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 import platform
 import signal
 import subprocess

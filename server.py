@@ -14,6 +14,12 @@ from __future__ import annotations
 
 import json
 import os
+
+# Disable all AI telemetry
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
+os.environ["DO_NOT_TRACK"] = "1"
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+
 import time
 from pathlib import Path
 from typing import AsyncGenerator
