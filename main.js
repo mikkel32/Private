@@ -6,8 +6,20 @@
  * In production, loads the built dist/index.html.
  */
 
-const { app, BrowserWindow, shell } = require("electron");
+const { app, BrowserWindow, shell, ipcMain } = require("electron");
 const path = require("path");
+const fs = require("fs");
+
+let secureInput;
+try {
+  // Graceful fallback if native module isn't compiled yet during dev
+  const addonPath = path.join(__dirname, "build", "Release", "secure_input.node");
+  if (fs.existsSync(addonPath)) {
+    secureInput = require(addonPath);
+  }
+} catch (e) {
+  console.warn("Native Secure Input module not loaded");
+}
 
 const IS_DEV = !app.isPackaged;
 const VITE_DEV_URL = "http://localhost:5173";
@@ -21,6 +33,22 @@ app.commandLine.appendSwitch("disable-background-networking");
 app.commandLine.appendSwitch("disable-default-apps");
 app.commandLine.appendSwitch("disable-dev-shm-usage"); // Prevent sharing memory with OS
 app.commandLine.appendSwitch("ignore-certificate-errors", "true"); // Allow volatile self-signed local certs
+
+// IPC Routers for Native C++ Proxy
+ipcMain.on("secure-append", (event, byte) => {
+  if (secureInput) secureInput.append(byte);
+});
+ipcMain.on("secure-backspace", () => {
+  if (secureInput) secureInput.backspace();
+});
+ipcMain.on("secure-wipe", () => {
+  if (secureInput) secureInput.wipe();
+});
+ipcMain.handle("secure-drain", async () => {
+  if (!secureInput) return Buffer.alloc(0);
+  // Returns Buffer containing payload and securely wipes the C++ physical RAM in one command
+  return secureInput.drain(); 
+});
 
 function createWindow() {
   const { session } = require('electron');

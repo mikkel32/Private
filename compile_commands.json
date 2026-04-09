@@ -1,0 +1,7 @@
+[
+  {
+    "directory": "/Users/mikkelmynderup/Desktop/Privacy/Private",
+    "command": "clang++ -std=c++17 -I/Users/mikkelmynderup/Library/Caches/node-gyp/20.1.0/include/node -I/Users/mikkelmynderup/Desktop/Privacy/Private/node_modules/node-addon-api -DNAPI_DISABLE_CPP_EXCEPTIONS=1 -c src/native/secure_input.cpp -o build/Release/obj.target/secure_input/src/native/secure_input.o",
+    "file": "src/native/secure_input.cpp"
+  }
+]

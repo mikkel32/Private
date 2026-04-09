@@ -57,3 +57,5 @@ Icon
 .DS_Store
 .DS_Store
 .DS_Store
+/build/Release
+/build

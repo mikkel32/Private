@@ -11,4 +11,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   platform: process.platform,
   onWindowBlur: (callback) => ipcRenderer.on("window-blur", () => callback()),
   onWindowFocus: (callback) => ipcRenderer.on("window-focus", () => callback()),
+  appendByte: (byte) => ipcRenderer.send("secure-append", byte),
+  backspace: () => ipcRenderer.send("secure-backspace"),
+  wipeVault: () => ipcRenderer.send("secure-wipe"),
+  drainVault: () => ipcRenderer.invoke("secure-drain"),
 });

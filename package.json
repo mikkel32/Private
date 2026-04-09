@@ -6,7 +6,8 @@
   "main": "main.js",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build:native": "node-gyp rebuild",
+    "build": "npm run build:native && vite build",
     "electron": "electron .",
     "start": "vite build && electron ."
   },
@@ -15,6 +16,7 @@
     "html2canvas": "1.4.1",
     "jspdf": "4.2.1",
     "katex": "0.16.45",
+    "node-addon-api": "8.0.0",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-markdown": "10.1.0",
@@ -25,6 +27,7 @@
   "devDependencies": {
     "@vitejs/plugin-react": "4.4.1",
     "electron": "35.2.0",
+    "node-gyp": "12.2.0",
     "vite": "6.3.2",
     "vite-plugin-sri": "0.0.2"
   }

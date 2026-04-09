@@ -7,11 +7,10 @@ import { useState, useRef, useCallback, useEffect } from "react";
 export default function MessageInput({ onSend, onStop, isStreaming, disabled, settings }) {
   const inputRef = useRef(null);
   
-  // Extreme Privacy: Memory Managed Keystroke Buffer
-  // We allocate exactly 8192 bytes. Keystrokes are written to this TypedArray.
-  const bufferRef = useRef(new Uint8Array(8192));
-  const pointerRef = useRef(0);
-  const [renderTrigger, setRenderTrigger] = useState(0);
+  // Extreme Privacy: C++ Vault Counter
+  // The characters themselves are physically residing inside the macOS C++ compilation.
+  // The frontend only tracks how many dots to render. V8 never aggregates the Strings.
+  const [vaultLength, setVaultLength] = useState(0);
 
   const resize = useCallback(() => {
     // We use standard input element size here
@@ -19,61 +18,61 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
 
   useEffect(() => {
     resize();
-  }, [renderTrigger, resize]);
-
-  const getCurrentText = useCallback(() => {
-    return new TextDecoder().decode(bufferRef.current.subarray(0, pointerRef.current));
-  }, []);
+  }, [vaultLength, resize]);
 
   const wipeMemory = useCallback(() => {
-    // Cryptographically obliterate the allocated RAM sectors for the physical buffer
-    window.crypto.getRandomValues(bufferRef.current);
-    bufferRef.current.fill(0);
-    pointerRef.current = 0;
+    window.electronAPI.wipeVault();
+    setVaultLength(0);
     if (inputRef.current) inputRef.current.value = "";
-    setRenderTrigger(v => v + 1);
   }, []);
 
   const handleKeyDown = useCallback(
-    (e) => {
+    async (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        const currentText = getCurrentText();
-        if (currentText.trim() && !isStreaming && !disabled) {
-          onSend(currentText);
+        if (vaultLength > 0 && !isStreaming && !disabled) {
+          // Drain physical payload from C++ into a Volatile ArrayBuffer
+          const bufferPayload = await window.electronAPI.drainVault();
+          if (bufferPayload && bufferPayload.length > 0) {
+              const text = new TextDecoder().decode(bufferPayload);
+              onSend(text);
+          }
           wipeMemory();
         }
+      } else if (e.key === "Backspace") {
+        window.electronAPI.backspace();
+        setVaultLength(l => Math.max(0, l - 1));
+      } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) {
+        window.electronAPI.appendByte(e.key.charCodeAt(0));
+        setVaultLength(l => l + 1);
       }
+      // Extremely crucial: Wipe DOM input instantly to prevent Blink engine tracking
+      setTimeout(() => { if (inputRef.current) inputRef.current.value = ""; }, 0);
     },
-    [isStreaming, disabled, onSend, wipeMemory, getCurrentText]
+    [isStreaming, disabled, onSend, wipeMemory, vaultLength]
   );
-
+  
   const handleInputChange = useCallback((e) => {
-    const val = e.target.value;
-    const encoder = new TextEncoder();
-    const encoded = encoder.encode(val);
-    
-    // Bounds check to prevent buffer overflow attack on local V8
-    if (encoded.length > 8192) return;
-    
-    bufferRef.current.set(encoded);
-    pointerRef.current = encoded.length;
-    setRenderTrigger(v => v + 1);
+      // Disabled; inputs are intercepted at keydown phase natively.
+      e.target.value = "";
   }, []);
 
-  const handleSendClick = useCallback(() => {
+  const handleSendClick = useCallback(async () => {
     if (isStreaming) {
       onStop();
     } else {
-      const currentText = getCurrentText();
-      if (currentText.trim() && !disabled) {
-        onSend(currentText);
+      if (vaultLength > 0 && !disabled) {
+        const bufferPayload = await window.electronAPI.drainVault();
+        if (bufferPayload && bufferPayload.length > 0) {
+            const text = new TextDecoder().decode(bufferPayload);
+            onSend(text);
+        }
         wipeMemory();
       }
     }
-  }, [isStreaming, disabled, onSend, onStop, wipeMemory, getCurrentText]);
+  }, [isStreaming, disabled, onSend, onStop, wipeMemory, vaultLength]);
 
-  const previewText = getCurrentText();
+  const previewText = "●".repeat(vaultLength);
 
   return (
     <div className="input-area">
