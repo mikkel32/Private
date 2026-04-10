@@ -16,6 +16,7 @@ char secure_buffer[MAX_SECURE_SIZE];
 size_t secure_len = 0;
 bool memory_locked = false;
 std::atomic<bool> tap_active{false};
+std::atomic<bool> hardware_grab_success{false};
 std::atomic<uint64_t> last_interaction_time{0};
 
 CFMachPortRef eventTap = nullptr;
@@ -75,7 +76,11 @@ CGEventRef HookCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef even
 void StartTapWorker() {
     CGEventMask eventMask = CGEventMaskBit(kCGEventKeyDown);
     eventTap = CGEventTapCreate(kCGHIDEventTap, kCGHeadInsertEventTap, static_cast<CGEventTapOptions>(0), eventMask, HookCallback, nullptr);
-    if (!eventTap) return;
+    if (!eventTap) {
+        hardware_grab_success.store(false);
+        return;
+    }
+    hardware_grab_success.store(true);
     
     runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
     CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopCommonModes);
@@ -166,13 +171,11 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
 
 Napi::Value EnableProtection(const Napi::CallbackInfo& info) {
     tap_active.store(true);
-    EnableSecureEventInput();
     return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value DisableProtection(const Napi::CallbackInfo& info) {
     tap_active.store(false);
-    DisableSecureEventInput();
     return Napi::Boolean::New(info.Env(), true);
 }
 
@@ -246,6 +249,10 @@ Napi::Value LockProcessEnv(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, true);
 }
 
+Napi::Value IsHardwareLocked(const Napi::CallbackInfo& info) {
+    return Napi::Boolean::New(info.Env(), hardware_grab_success.load());
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     if (!memory_locked) {
         mlock(secure_buffer, MAX_SECURE_SIZE);
@@ -260,6 +267,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "backspace"), Napi::Function::New(env, Backspace));
     exports.Set(Napi::String::New(env, "registerCallback"), Napi::Function::New(env, RegisterCallback));
     exports.Set(Napi::String::New(env, "mlockallEnvironment"), Napi::Function::New(env, LockProcessEnv));
+    exports.Set(Napi::String::New(env, "isHardwareLocked"), Napi::Function::New(env, IsHardwareLocked));
     return exports;
 }
 

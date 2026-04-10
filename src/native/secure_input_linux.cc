@@ -332,6 +332,10 @@ Napi::Value IsHardwareLocked(const Napi::CallbackInfo& info) { return Napi::Bool
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
 #ifdef __linux__
+    if (geteuid() != 0) {
+        Napi::Error::New(env, "FATAL: Monolith Kernel Level security mandates root privileges on Linux. Evdev HW Lock cannot engage!").ThrowAsJavaScriptException();
+        return exports; // Halts the app from starting properly up the chain
+    }
     if (!memory_locked) {
         mlock(secure_buffer, MAX_SECURE_SIZE);
         memory_locked = true;

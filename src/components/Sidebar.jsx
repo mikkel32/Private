@@ -42,7 +42,7 @@ export default function Sidebar({
           className="export-action-btn" 
           onClick={onExport}
           title="Secure Vault Export (AES-256-GCM)"
-          style={{ width: '100%', padding: '10px', background: '#123010', color: '#4caf50', border: '1px solid #4caf5055', borderRadius: '6px', marginBottom: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '13px' }}
+          style={{ width: '100%', padding: '10px', background: '#123010', color: '#4caf50', border: '1px solid #4caf5055', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '13px' }}
         >
           <span>🔐</span> Secure Export
         </button>
@@ -50,12 +50,12 @@ export default function Sidebar({
           className="danger-action-btn" 
           onClick={onPurgeData}
           title="Permanently Erase All Data"
-          style={{ width: '100%', padding: '10px', background: '#301010', color: '#ff6b6b', border: '1px solid #ff444455', borderRadius: '6px', marginBottom: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '13px' }}
+          style={{ width: '100%', padding: '10px', background: '#301010', color: '#ff6b6b', border: '1px solid #ff444455', borderRadius: '6px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', fontSize: '13px' }}
         >
           <span>🔥</span> Erase All Data
         </button>
 
-        <div className="sidebar-footer-controls" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div className="sidebar-footer-controls" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', marginTop: '4px' }}>
           <div className={`model-badge ${serverOnline ? "" : "offline"}`}>
             <span className="dot" />
             <div className="model-info">

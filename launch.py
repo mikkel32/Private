@@ -164,7 +164,7 @@ def generate_tls_certs() -> None:
         ])
     
     # Always generate fingerprint to ensure node receives latest hash mapping
-    out = subprocess.check_output(["openssl", "x509", "-in", "cert.pem", "-noout", "-fingerprint", "-sha256"])
+    out = subprocess.check_output(["openssl", "x509", "-in", "cert.pem", "-noout", "-fingerprint", "-sha256"], cwd=str(ROOT))
     fingerprint = out.decode("utf-8").strip().split("=")[1]
     (ROOT / "cert_fingerprint.txt").write_text(fingerprint)
 
@@ -215,8 +215,8 @@ def start_electron() -> subprocess.Popen:
     return subprocess.Popen(
         ["npx", "electron", "."],
         cwd=str(ROOT),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=None,
+        stderr=None,
     )
 
 

@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Protocol Omega: Network Dispatch
   secureNetworkDispatch: (configObj) => ipcRenderer.send("secure-network-dispatch", configObj),
   fetchHistory: (id) => ipcRenderer.send("fetch-history", id),
+  checkServerHealth: () => ipcRenderer.invoke("check-server-health"),
   exportVault: (id) => ipcRenderer.send("export-vault", id),
   onVaultExportKey: (callback) => ipcRenderer.on("vault-export-key", (_, buffer) => callback(buffer)),
   offVaultExportKey: () => ipcRenderer.removeAllListeners("vault-export-key"),

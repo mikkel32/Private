@@ -6,9 +6,10 @@
  * In production, loads the built dist/index.html.
  */
 
-const { app, BrowserWindow, ipcMain, net } = require("electron");
+const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const https = require("https");
 
 let secureInput;
 try {
@@ -22,6 +23,10 @@ try {
     }
   }
 } catch (e) {
+  if (process.platform === 'linux' && e.message && e.message.includes("FATAL: Monolith Kernel Level security mandates root privileges")) {
+      console.error(e.message);
+      process.exit(1);
+  }
   console.warn("Native Secure Input module not loaded");
 }
 
@@ -37,27 +42,24 @@ app.commandLine.appendSwitch("disable-background-networking");
 app.commandLine.appendSwitch("disable-default-apps");
 app.commandLine.appendSwitch("disable-dev-shm-usage"); // Prevent sharing memory with OS
 // Strict TLS Pinning
-let pinnedFingerprint = "";
+let rawFingerprint = "";
 try {
-  const rawFingerprint = fs.readFileSync(path.join(__dirname, "cert_fingerprint.txt"), "utf-8").trim();
-  // Ensure correct format for Electron (sha256/XXXX... base64 encoded string from hex)
-  pinnedFingerprint = `sha256/${Buffer.from(rawFingerprint.replace(/:/g, ''), 'hex').toString('base64')}`;
+  rawFingerprint = fs.readFileSync(path.join(__dirname, "cert_fingerprint.txt"), "utf-8").trim();
 } catch (e) {
-  console.error("Missing pinned certificate fingerprint! Local MITM protection inactive.");
+  console.error("Missing cert_fingerprint.txt! Local MITM protection inactive.");
 }
 
-app.on('certificate-error', (event, webContents, url, error, certificate, callback) => {
-  if (url.startsWith("https://127.0.0.1:8420")) {
-    if (certificate.fingerprint === pinnedFingerprint) {
-      event.preventDefault();
-      callback(true);
-      return;
-    } else {
-      console.error(`FATAL MITM INTERCEPT: Fingerprint mismatch! Expected ${pinnedFingerprint}, got ${certificate.fingerprint}`);
-    }
+function validateFingerprint(res, req) {
+  const cert = res.socket.getPeerCertificate();
+  if (!cert || cert.fingerprint256 !== rawFingerprint) {
+    console.error(`FATAL MITM INTERCEPT: Fingerprint mismatch! Expected ${rawFingerprint}, got ${cert ? cert.fingerprint256 : 'none'}`);
+    req.destroy();
+    return false;
   }
-  callback(false);
-});
+  return true;
+}
+
+// Deprecated Chromium net.request callback
 
 app.commandLine.appendSwitch("force-webrtc-ip-handling-policy", "disable_non_proxied_udp"); // Defeat WebRTC IP leaks
 
@@ -151,13 +153,14 @@ ipcMain.on("secure-network-dispatch", (event, configObj) => {
     finalPayload.writeUInt32BE(secret.length, offset); offset += 4;
     secret.copy(finalPayload, offset); offset += secret.length;
 
-    const req = net.request({
-      url: "https://127.0.0.1:8420/v1/chat/stream_canvas",
+    const req = https.request("https://127.0.0.1:8420/v1/chat/stream_canvas", {
       method: 'POST',
+      rejectUnauthorized: false,
+      headers: { 'Content-Type': 'application/octet-stream' }
     });
-    req.setHeader('Content-Type', 'application/octet-stream');
     
     req.on('response', (res) => {
+      if (!validateFingerprint(res, req)) return event.sender.send("secure-stream-end");
       if (res.statusCode !== 200) {
         return event.sender.send("secure-stream-end");
       }
@@ -191,26 +194,57 @@ ipcMain.on("secure-network-dispatch", (event, configObj) => {
       event.sender.send("secure-stream-end");
     });
 
-    req.end(finalPayload);
-
-    // Natively wipe completely before passing control back to GC
+  req.on('finish', () => {
+    // Natively wipe completely after the final TCP packet is fully handed off to kernel
+    // The Buffer is inaccessible to typical V8 GC paths natively anyway.
     finalPayload.fill(0);
     secret.fill(0);
     convIdBuf.fill(0);
+  });
+  req.end(finalPayload);
     
   } catch (err) {
     console.error("Splice error:", err);
   }
 });
 
+ipcMain.handle("check-server-health", () => {
+  return new Promise((resolve) => {
+    const req = https.request("https://127.0.0.1:8420/health", {
+      method: "GET",
+      rejectUnauthorized: false,
+      timeout: 2000
+    }, (res) => {
+      if (!validateFingerprint(res, req)) return resolve({ ok: false });
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        if (res.statusCode === 200) {
+          try {
+            resolve({ ok: true, data: JSON.parse(data) });
+          } catch (e) {
+            resolve({ ok: false });
+          }
+        } else {
+          resolve({ ok: false });
+        }
+      });
+    });
+    req.on('error', () => resolve({ ok: false }));
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false }); });
+    req.end();
+  });
+});
+
 ipcMain.on("fetch-history", (event, id) => {
   const targetUrl = `https://127.0.0.1:8420/v1/chat/render/${id}`;
-  const req = net.request({
-    url: targetUrl,
-    method: 'GET'
+  const req = https.request(targetUrl, {
+    method: 'GET',
+    rejectUnauthorized: false
   });
   
   req.on('response', (res) => {
+    if (!validateFingerprint(res, req)) return;
     if (res.statusCode !== 200) {
       return;
     }
@@ -243,12 +277,13 @@ ipcMain.on("export-vault", (event, id) => {
   const os = require('os');
   const targetEncPath = path.join(os.homedir(), 'Desktop', `Monolith_Vault_${id.substring(0, 8)}.enc`);
   
-  const req = net.request({
-    url: `https://127.0.0.1:8420/v1/chat/export/${id}`,
-    method: 'GET'
+  const req = https.request(`https://127.0.0.1:8420/v1/chat/export/${id}`, {
+    method: 'GET',
+    rejectUnauthorized: false
   });
   
   req.on('response', (res) => {
+    if (!validateFingerprint(res, req)) return;
     if (res.statusCode !== 200) {
       console.error("Export Vault error:", res.statusCode);
       return;
@@ -259,12 +294,13 @@ ipcMain.on("export-vault", (event, id) => {
        fileStream.end();
        
        // The file is secure. Now securely request the PNG raster of the password.
-       const reqKey = net.request({
-         url: `https://127.0.0.1:8420/v1/chat/export/key/${id}`,
-         method: 'GET'
+       const reqKey = https.request(`https://127.0.0.1:8420/v1/chat/export/key/${id}`, {
+         method: 'GET',
+         rejectUnauthorized: false
        });
        
        reqKey.on('response', (kRes) => {
+           if (!validateFingerprint(kRes, reqKey)) return;
            let pngBuffer = Buffer.alloc(0);
            kRes.on('data', chunk => {
                pngBuffer = Buffer.concat([pngBuffer, chunk]);
@@ -351,7 +387,9 @@ function createWindow() {
   }
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+});
 
 app.on("window-all-closed", () => {
   app.quit();

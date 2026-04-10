@@ -5,7 +5,7 @@ import MessageInput from "./components/MessageInput.jsx";
 import StatsBar from "./components/StatsBar.jsx";
 import SettingsPanel from "./components/SettingsPanel.jsx";
 
-const API_URL = "https://127.0.0.1:8420";
+// API_URL has been removed to enforce zero-trust IPC routing
 
 function uid() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -54,11 +54,10 @@ export default function App() {
   // ── Health check ───────────────────────────────────────────────────────
   const checkHealth = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/health`, { signal: AbortSignal.timeout(2000) });
-      if (res.ok) {
-        const data = await res.json();
+      const res = await window.electronAPI.checkServerHealth();
+      if (res && res.ok) {
         setServerOnline(true);
-        setServerInfo(data);
+        setServerInfo(res.data);
       } else {
         setServerOnline(false);
       }
@@ -214,7 +213,7 @@ export default function App() {
           <div style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 1000, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
              <div style={{ background: '#1e1e24', padding: '20px', borderRadius: '8px', border: '1px solid #4caf50', maxWidth: '80%', maxHeight: '80%', display: 'flex', flexDirection: 'column' }}>
                  <h2 style={{ color: '#4caf50', margin: '0 0 10px 0', textAlign: 'center' }}>AES Vault Export Complete</h2>
-                 <p style={{ color: '#aaa', fontSize: '13px', textAlign: 'center', marginTop: 0 }}>The .enc file has been written to your Desktop. This is your ONLY chance to record the decryption password.</p>
+                 <p style={{ color: '#aaa', fontSize: '13px', textAlign: 'center', marginTop: 0, marginBottom: '20px', lineHeight: '1.5' }}>The .enc file has been written to your Desktop. This is your ONLY chance to record the decryption password.</p>
                  <img src={exportKeyUrl} alt="Decryption Key" style={{ maxWidth: '100%', maxHeight: '60vh', objectFit: 'contain', userSelect: 'none' }} draggable="false" />
                  <button onClick={closeExportModal} style={{ marginTop: '20px', padding: '10px', background: '#333', color: '#fff', border: '1px solid #555', borderRadius: '4px', cursor: 'pointer' }}>I have secured the password</button>
              </div>
