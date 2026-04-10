@@ -21,9 +21,20 @@ typedef unsigned int IOOptionBits;
 #define OS_LOG_DEFAULT 0
 #define os_log(log, ...)
 #define os_log_debug(log, ...)
+#define OSDynamicCast(type, inst) ((type*)inst)
 class IOService {};
-class IOUserClient {};
-class IOMemoryDescriptor {};
+class IOMemoryDescriptor {
+public:
+    virtual void release() {}
+};
+class IOBufferMemoryDescriptor : public IOMemoryDescriptor {
+public:
+    virtual void GetAddressRange(uint64_t* address, uint64_t* length) {}
+};
+class IOUserClient {
+public:
+    virtual kern_return_t CopyClientMemoryForType(uint64_t type, uint64_t options, IOMemoryDescriptor** memory) { return kIOReturnSuccess; }
+};
 class IOUserHIDEventService : public IOService {
 public:
     virtual bool init() { return true; }
@@ -94,25 +105,33 @@ void MonolithSecureHIDDriver::dispatchKeyboardEvent(uint64_t timeStamp, uint32_t
         if (this->userClient) {
             // Under DriverKit, we extract our Shared Memory Descriptor mapped during Connect()
             IOMemoryDescriptor* shm = nullptr;
-            /* userClient->GetSharedMemory(0, &shm); */
-            if (shm) {
+            // The XPC Client sets type 0 to its memory map during connection
+            if (userClient->CopyClientMemoryForType(0, (uint64_t)0, &shm) == kIOReturnSuccess && shm) {
                 // Atomic ring-buffer lock-free payload drop
-                // IOBufferMemoryDescriptor* bmd = OSDynamicCast(IOBufferMemoryDescriptor, shm);
-                // if (bmd) {
-                //    uint32_t* buf = (uint32_t*)bmd->getBytesNoCopy();
-                //    
-                //    // [ZERO-TRUST KERNEL IPC]
-                //    // We cannot trust the generic OS memory manager. The payload MUST be 
-                //    // XOR-encrypted in Ring 0 BEFORE writing to the shared User-Space memory map.
-                //    // buf[1] contains the ephemeral session key previously seeded by secure_input.mm.
-                //    uint32_t sessionKey = buf[1];
-                //    uint32_t encrypted_usage = usage ^ sessionKey;
-                //    
-                //    // Append encrypted_usage & value to the physical ring buffer
-                //    uint32_t tail = buf[0];
-                //    buf[2 + (tail % 1024)] = encrypted_usage; // Simple ring buffer
-                //    __atomic_store_n(&buf[0], tail + 1, __ATOMIC_RELEASE);
-                // }
+                IOBufferMemoryDescriptor* bmd = OSDynamicCast(IOBufferMemoryDescriptor, shm);
+                if (bmd) {
+                   uint64_t address = 0;
+                   uint64_t length = 0;
+                   bmd->GetAddressRange(&address, &length);
+                   uint32_t* buf = (uint32_t*)address;
+                   
+                   if (buf && length >= 1024) {
+                       // [ZERO-TRUST KERNEL IPC]
+                       // We cannot trust the generic OS memory manager. The payload MUST be 
+                       // XOR-encrypted in Ring 0 BEFORE writing to the shared User-Space memory map.
+                       // buf[1] contains the ephemeral session key previously seeded by secure_input.mm.
+                       uint32_t sessionKey = buf[1];
+                       uint32_t encrypted_usage = usage ^ sessionKey;
+                       
+                       // Append encrypted_usage & value to the physical ring buffer
+                       uint32_t tail = buf[0];
+                       buf[2 + (tail % 1024)] = encrypted_usage; // Simple ring buffer
+                       
+                       // Atomically release memory fence back to Ring 3 (secure_input.mm listener)
+                       __atomic_store_n(&buf[0], tail + 1, __ATOMIC_RELEASE);
+                   }
+                }
+                shm->release();
             }
         }
         

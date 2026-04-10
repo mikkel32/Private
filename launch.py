@@ -119,8 +119,13 @@ def start_server(python: Path) -> subprocess.Popen:
     # [Layer 4: Agentic Autonomy Execution Sandboxing]
     if sys.platform == "darwin":
         sandbox_profile = str(ROOT / "monolith.sb")
-        cmd = ["sandbox-exec", "-f", sandbox_profile] + cmd
-        log(f"  \033[90m↳ Enforcing Apple App Sandbox (monolith.sb)\033[0m")
+        cmd = [
+            "sandbox-exec", 
+            "-D", f"PROJECT_DIR={str(ROOT)}", 
+            "-D", f"VENV_DIR={str(VENV_DIR)}", 
+            "-f", sandbox_profile
+        ] + cmd
+        log(f"  \033[90m↳ Enforcing Apple App Sandbox (monolith.sb with dynamic paths)\033[0m")
     elif sys.platform.startswith("linux"):
         # Bubblewrap pseudo-logic fallback
         cmd = [
