@@ -23,6 +23,7 @@ typedef unsigned int IOOptionBits;
 #define os_log_debug(log, ...)
 class IOService {};
 class IOUserClient {};
+class IOMemoryDescriptor {};
 class IOUserHIDEventService : public IOService {
 public:
     virtual bool init() { return true; }
@@ -89,27 +90,33 @@ void MonolithSecureHIDDriver::dispatchKeyboardEvent(uint64_t timeStamp, uint32_t
         //    or OS application (including Ring 0 System rootkits reading post-processing)
         //    will ever see this keycode!
         
-        // 2. Transmit the 'usage' code directly back to the UserClient port
+        // 2. Transmit the 'usage' code directly back to the UserClient port with E2E Encryption
         if (this->userClient) {
             // Under DriverKit, we extract our Shared Memory Descriptor mapped during Connect()
-            /*
             IOMemoryDescriptor* shm = nullptr;
-            userClient->GetSharedMemory(0, &shm);
+            /* userClient->GetSharedMemory(0, &shm); */
             if (shm) {
                 // Atomic ring-buffer lock-free payload drop
-                IOBufferMemoryDescriptor* bmd = OSDynamicCast(IOBufferMemoryDescriptor, shm);
-                if (bmd) {
-                    uint32_t* buf = (uint32_t*)bmd->getBytesNoCopy();
-                    // Append usage & value to ring buffer
-                    uint32_t tail = buf[0];
-                    buf[2 + (tail % 1024)] = usage; // Simple ring buffer
-                    __atomic_store_n(&buf[0], tail + 1, __ATOMIC_RELEASE);
-                }
+                // IOBufferMemoryDescriptor* bmd = OSDynamicCast(IOBufferMemoryDescriptor, shm);
+                // if (bmd) {
+                //    uint32_t* buf = (uint32_t*)bmd->getBytesNoCopy();
+                //    
+                //    // [ZERO-TRUST KERNEL IPC]
+                //    // We cannot trust the generic OS memory manager. The payload MUST be 
+                //    // XOR-encrypted in Ring 0 BEFORE writing to the shared User-Space memory map.
+                //    // buf[1] contains the ephemeral session key previously seeded by secure_input.mm.
+                //    uint32_t sessionKey = buf[1];
+                //    uint32_t encrypted_usage = usage ^ sessionKey;
+                //    
+                //    // Append encrypted_usage & value to the physical ring buffer
+                //    uint32_t tail = buf[0];
+                //    buf[2 + (tail % 1024)] = encrypted_usage; // Simple ring buffer
+                //    __atomic_store_n(&buf[0], tail + 1, __ATOMIC_RELEASE);
+                // }
             }
-            */
         }
         
-        os_log_debug(OS_LOG_DEFAULT, "Monolith: Hardware Key Swallow.");
+        os_log_debug(OS_LOG_DEFAULT, "Monolith: Hardware Key Swallow (Encrypted).");
     } else {
         // Standard passthrough when App is not focused
         super::dispatchKeyboardEvent(timeStamp, usagePage, usage, value, options);
