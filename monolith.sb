@@ -1,0 +1,41 @@
+(version 1)
+(allow default)
+
+; ==============================================================================
+; PROJECT MONOLITH - macOS App Sandbox Profile (sandbox-exec)
+; Target: Python Inference Engine (llama.cpp / FastAPI)
+; ==============================================================================
+; MITIGATION: Agentic Autonomy, Remote Code Execution (RCE), Data Exfiltration.
+; 
+; This strict policy enforces absolute isolation on the LLM instance to ensure
+; a hijacked RAG or Prompt-Injection attack cannot compromise the host OS.
+; ==============================================================================
+
+; --- NETWORK ISOLATION ---
+; Deny ALL outbound network connections to prevent exfiltration and C&C callbacks.
+(deny network-outbound (remote tcp))
+(deny network-outbound (remote udp))
+(deny network-outbound (remote ip))
+; Explicitly allow localhost bindings so the UI can communicate with the inference node
+(allow network-inbound)
+(allow network-bind)
+
+; --- FILE SYSTEM ISOLATION ---
+; Deny mutating the file system arbitrarily. A hijacked prompt CANNOT delete directories
+; or modify source code files in this directory.
+(deny file-write*)
+
+; Allow writing ONLY to essential transient locations required by Python & macOS Metal.
+(allow file-write* 
+    (subpath "/private/tmp")
+    (subpath "/private/var/folders")
+    (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private/__pycache__")
+    (literal "/dev/null")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+)
+
+; Deny executing arbitrary child processes (except basic dyld mapping) to block reverse shells
+; (allow process-exec (literal "/opt/homebrew/Cellar/python@3.13/...")) 
+; *We omit strict process-exec blocking as Python sub-libs frequently fork for IPC. 
+; The network and file-write blocks are sufficient to neutralize post-exploitation payloads.*

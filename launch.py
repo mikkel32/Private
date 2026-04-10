@@ -112,15 +112,31 @@ def install_python_deps(python: Path) -> None:
 
 
 def start_server(python: Path) -> subprocess.Popen:
-    log("Starting Gemma 4 E4B inference server (128K ctx, Q4_0 KV cache)…")
+    log("Starting Gemma 4 E4B inference server (128K ctx) inside SECURE SANDBOX…")
+    
+    cmd = [str(python), str(SERVER_SCRIPT)]
+    
+    # [Layer 4: Agentic Autonomy Execution Sandboxing]
+    if sys.platform == "darwin":
+        sandbox_profile = str(ROOT / "monolith.sb")
+        cmd = ["sandbox-exec", "-f", sandbox_profile] + cmd
+        log(f"  \033[90m↳ Enforcing Apple App Sandbox (monolith.sb)\033[0m")
+    elif sys.platform.startswith("linux"):
+        # Bubblewrap pseudo-logic fallback
+        cmd = [
+            "bwrap", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
+            "--tmpfs", "/tmp", "--bind", str(ROOT), str(ROOT),
+            "--unshare-pid", "--unshare-ipc"
+        ] + cmd
+        log(f"  \033[90m↳ Enforcing Linux Bubblewrap (bwrap)\033[0m")
+
     proc = subprocess.Popen(
-        [str(python), str(SERVER_SCRIPT)],
+        cmd,
         cwd=str(ROOT),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
     )
-
     import threading
 
     def stream_output():

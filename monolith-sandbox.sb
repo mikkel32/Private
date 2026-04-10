@@ -1,0 +1,6 @@
+(version 1)
+(allow default)
+(deny network-outbound (remote ip))
+(allow network-outbound (remote ip "127.0.0.1") (remote ip "::1"))
+(allow network-bind (local ip "127.0.0.1") (local ip "::1"))
+(deny process-exec*)

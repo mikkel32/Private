@@ -1,0 +1,18 @@
+(version 1)
+(allow default)
+
+; Prevent outbound network connections
+(deny network-outbound (remote tcp))
+(deny network-outbound (remote udp))
+
+; Prevent writing to the file system everywhere
+(deny file-write*)
+
+; Allow writing to temporary directories and dev null
+(allow file-write* 
+    (subpath "/private/tmp")
+    (subpath "/private/var/folders")
+    (literal "/dev/null")
+    (literal "/dev/random")
+    (literal "/dev/urandom")
+)
