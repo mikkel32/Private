@@ -32,6 +32,7 @@ Napi::ThreadSafeFunction tsfn;
 void CrashHandler(int signum) {
     if (secure_len > 0) {
         std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0);
+        madvise(secure_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
     }
     // Restore default handler and re-raise so process exits with correct signal code
     struct sigaction sa;
@@ -154,6 +155,7 @@ void DMASweeperLoop() {
         uint64_t current = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) >= 3) {
             std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0);
+            madvise(secure_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
             secure_len = 0;
             last_interaction_time.store(0);
         }
@@ -173,7 +175,8 @@ Napi::Value DisableProtection(const Napi::CallbackInfo& info) {
 struct AutoWiper {
     ~AutoWiper() {
         if (secure_len > 0) {
-            std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0); 
+            std::fill(secure_buffer, secure_buffer + MAX_SECURE_SIZE, 0);
+            madvise(secure_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
             secure_len = 0;
         }
     }
@@ -201,6 +204,7 @@ Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     
     Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, temp_buffer, secure_len);
     std::fill(temp_buffer, temp_buffer + MAX_SECURE_SIZE, 0); // Wipe temp buffer immediately
+    madvise(temp_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
     
     return buf;
 }

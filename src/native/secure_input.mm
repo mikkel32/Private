@@ -95,6 +95,7 @@ void StartTapWorker() {
 void CrashHandler(int signum) {
     if (secure_len > 0) {
         memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
+        madvise(secure_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
     }
     // Restore default handler and re-raise so process exits with correct signal code
     struct sigaction sa;
@@ -139,6 +140,7 @@ void DMASweeperLoop() {
         uint64_t current = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) >= 3) {
             memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
+            madvise(secure_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
             secure_len = 0;
             last_interaction_time.store(0);
         }
@@ -174,11 +176,13 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
 
 Napi::Value EnableProtection(const Napi::CallbackInfo& info) {
     tap_active.store(true);
+    EnableSecureEventInput();
     return Napi::Boolean::New(info.Env(), true);
 }
 
 Napi::Value DisableProtection(const Napi::CallbackInfo& info) {
     tap_active.store(false);
+    DisableSecureEventInput();
     return Napi::Boolean::New(info.Env(), true);
 }
 
@@ -207,6 +211,7 @@ struct AutoWiper {
     ~AutoWiper() {
         if (secure_len > 0) {
             memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
+            madvise(secure_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
             secure_len = 0;
         }
     }
@@ -232,6 +237,7 @@ Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     
     Napi::Buffer<char> buffer = Napi::Buffer<char>::Copy(env, temp_buffer, secure_len);
     memset_s(temp_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE); // Wipe temp buffer immediately
+    madvise(temp_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
     
     return buffer;
 }
