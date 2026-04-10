@@ -139,6 +139,12 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), true);
 }
 
+Napi::Value IsHardwareLocked(const Napi::CallbackInfo& info) {
+    // Windows WH_KEYBOARD_LL is an inherently vulnerable user-mode hook.
+    // It can NEVER guarantee isolation against kernel rootkits.
+    return Napi::Boolean::New(info.Env(), false);
+}
+
 struct AutoWiper {
     ~AutoWiper() {
         if (secure_len > 0) {
@@ -206,6 +212,7 @@ Napi::Value Wipe(const Napi::CallbackInfo& info) { return Napi::Boolean::New(inf
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) { return Napi::Buffer<char>::New(info.Env(), 0); }
 Napi::Value Backspace(const Napi::CallbackInfo& info) { return Napi::Boolean::New(info.Env(), false); }
 Napi::Value RegisterCallback(const Napi::CallbackInfo& info) { return Napi::Boolean::New(info.Env(), false); }
+Napi::Value IsHardwareLocked(const Napi::CallbackInfo& info) { return Napi::Boolean::New(info.Env(), false); }
 
 #endif
 
@@ -224,6 +231,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set("drain", Napi::Function::New(env, DrainPayload));
     exports.Set("backspace", Napi::Function::New(env, Backspace));
     exports.Set("registerCallback", Napi::Function::New(env, RegisterCallback));
+    exports.Set("isHardwareLocked", Napi::Function::New(env, IsHardwareLocked));
     return exports;
 }
 

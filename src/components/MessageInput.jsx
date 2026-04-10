@@ -17,10 +17,11 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
 
   useEffect(() => {
     async function checkHardware() {
-      if (window.electronAPI && window.electronAPI.platform === "linux") {
+      if (window.electronAPI) {
         const isLocked = await window.electronAPI.isHardwareLocked();
-        if (!isLocked) {
+        if (!isLocked && (window.electronAPI.platform === "linux" || window.electronAPI.platform === "win32")) {
           setHardwareLockWarning(true);
+          setGhostMode(true); // Force Ghost Protocol automatically
         }
       }
     }
@@ -97,7 +98,8 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
     <>
       {hardwareLockWarning && (
         <div style={{ backgroundColor: '#ff3b30', color: 'white', padding: '10px', textAlign: 'center', fontSize: '12px', fontWeight: 'bold', borderRadius: '8px', marginBottom: '8px', zIndex: 100 }}>
-          ⚠️ CRITICAL: ROOT PRIVILEGES MISSING (Wayland Compromised). EVIOCGRAB FAILED. ENABLE GHOST PROTOCOL IMMEDIATELY.
+          ⚠️ CRITICAL: HARDWARE-LEVEL VULNERABILITY DETECTED. PHYSICAL KEYBOARD HOOK REJECTED / INSECURE.<br/>
+          Ghost Protocol (OSK) has been forcibly enabled to prevent user-space Rootkits from intercepting keystrokes.
         </div>
       )}
       <div className="input-area" style={{ position: 'relative' }}>
@@ -182,15 +184,17 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
             )}
           </div>
           <button
-              onClick={() => setGhostMode(m => !m)}
-              title="Toggle Ghost Protocol (OSK)"
+              onClick={() => !hardwareLockWarning && setGhostMode(m => !m)}
+              title={hardwareLockWarning ? "Ghost Protocol Forced (Hardware Compromised)" : "Toggle Ghost Protocol (OSK)"}
+              disabled={hardwareLockWarning}
               style={{
-                  background: ghostMode ? '#4caf50' : 'transparent',
+                  background: ghostMode ? (hardwareLockWarning ? '#ff9800' : '#4caf50') : 'transparent',
                   border: '1px solid #444',
                   color: ghostMode ? '#000' : '#888',
                   padding: '0 12px',
                   borderRadius: '4px',
-                  cursor: 'pointer',
+                  cursor: hardwareLockWarning ? 'not-allowed' : 'pointer',
+                  opacity: hardwareLockWarning ? 0.8 : 1,
                   marginRight: '8px'
               }}
           >
