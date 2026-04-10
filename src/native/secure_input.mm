@@ -261,7 +261,9 @@ Napi::Value LockProcessEnv(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value IsHardwareLocked(const Napi::CallbackInfo& info) {
-    return Napi::Boolean::New(info.Env(), hardware_grab_success.load());
+    // macOS CGEventTap operates in User-Space (Ring 3) and cannot guarantee
+    // hardware-level isolation against Kernel Rootkits or physical logging.
+    return Napi::Boolean::New(info.Env(), false);
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {

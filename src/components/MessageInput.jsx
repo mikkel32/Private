@@ -19,7 +19,7 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
     async function checkHardware() {
       if (window.electronAPI) {
         const isLocked = await window.electronAPI.isHardwareLocked();
-        if (!isLocked && (window.electronAPI.platform === "linux" || window.electronAPI.platform === "win32")) {
+        if (!isLocked) {
           setHardwareLockWarning(true);
           setGhostMode(true); // Force Ghost Protocol automatically
         }

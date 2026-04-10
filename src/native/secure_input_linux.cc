@@ -221,6 +221,11 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
         return env.Null();
     }
 
+    if (geteuid() != 0) {
+        Napi::Error::New(env, "FATAL: Monolith Kernel Level security mandates root privileges").ThrowAsJavaScriptException();
+        return env.Null();
+    }
+
     if (!worker_running.exchange(true)) {
         SetupCrashHandlers();
         
