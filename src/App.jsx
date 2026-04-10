@@ -42,7 +42,6 @@ export default function App() {
     }
   }, []);
 
-  // ── Settings (persisted in state, could be localStorage later) ─────────
   const [settings, setSettings] = useState({
     securityMode: "paranoid",
     enableThinking: true,
@@ -50,6 +49,13 @@ export default function App() {
     maxTokens: 8192,
     temperature: 0.6,
     topP: 0.9,
+    topK: 40,
+    repeatPenalty: 1.1,
+    nThreads: 8,
+    enableDRM: true,
+    enableScreenProtection: true,
+    enableBlurOnFocusLoss: true,
+    enableAutoWipe: true,
   });
 
   // ── Health check ───────────────────────────────────────────────────────
@@ -77,7 +83,7 @@ export default function App() {
     if (serverOnline && activeId && !isStreaming) {
        window.electronAPI.fetchHistory(activeId);
     }
-  }, [activeId, serverOnline, isStreaming]);
+  }, [activeId, serverOnline, isStreaming, settings.securityMode]);
 
   const activeConversation = conversations.find((c) => c.id === activeId) || conversations[0];
 
@@ -123,6 +129,9 @@ export default function App() {
           max_tokens: settings.maxTokens,
           temperature: settings.temperature,
           top_p: settings.topP,
+          top_k: settings.topK,
+          repeat_penalty: settings.repeatPenalty,
+          n_threads: settings.nThreads,
           enable_thinking: settings.enableThinking ? 1 : 0,
           thinking_budget: settings.thinkingBudget,
         };
@@ -130,7 +139,7 @@ export default function App() {
         window.electronAPI.offStreamEvents();
 
         window.electronAPI.onStreamEnd(() => {
-           if (settings.securityMode !== "standard") {
+           if (settings.securityMode !== "standard" && settings.enableAutoWipe !== false) {
                window.electronAPI.wipeVault();
            }
            setIsStreaming(false);
@@ -178,8 +187,15 @@ export default function App() {
       }
   }, [exportKeyUrl]);
 
+  useEffect(() => {
+    if (window.electronAPI && window.electronAPI.setSecureLayerVisibility) {
+        const isOverlayActive = showSettings || exportKeyUrl !== null;
+        window.electronAPI.setSecureLayerVisibility(!isOverlayActive);
+    }
+  }, [showSettings, exportKeyUrl]);
+
   return (
-    <div className="app-layout" style={{ filter: isBlurred ? "blur(100px)" : "none", transition: "filter 0.05s ease-in", position: 'relative' }}>
+    <div className="app-layout" style={{ filter: (isBlurred && settings.enableBlurOnFocusLoss !== false) ? "blur(100px)" : "none", transition: "filter 0.05s ease-in", position: 'relative' }}>
       <Sidebar
         conversations={conversations}
         activeId={activeId}

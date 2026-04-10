@@ -10,6 +10,14 @@ export default function ChatWindow() {
       const canvas = canvasRef.current;
       if (!canvas) return;
 
+      if (pngData && pngData.type === "Dimensions") {
+          // Zero-Trust Isolation: The AppKit layer renders physics while Chromium merely resizes blindly.
+          canvas.width = pngData.width;
+          canvas.height = pngData.height;
+          canvas.parentElement.scrollTop = canvas.parentElement.scrollHeight;
+          return;
+      }
+
       // Handle standard IPC Serialization Edge Case {type: 'Buffer', data: [...]}
       const rawBytes = pngData.data ? pngData.data : pngData;
       const blob = new Blob([new Uint8Array(rawBytes)], { type: 'image/png' });
@@ -49,8 +57,47 @@ export default function ChatWindow() {
     };
   }, []);
 
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = canvas?.parentElement;
+    if (!canvas || !container || !window.electronAPI?.syncCanvasBounds) return;
+
+    const syncBounds = () => {
+        const cnt = container.getBoundingClientRect();
+        const cvs = canvas.getBoundingClientRect();
+        window.electronAPI.syncCanvasBounds({
+            containerX: cnt.x,
+            containerY: cnt.y,
+            containerW: cnt.width,
+            containerH: cnt.height,
+            canvasX: cvs.x,
+            canvasY: cvs.y,
+            canvasW: cvs.width,
+            canvasH: cvs.height
+        });
+    };
+
+    const observer = new ResizeObserver(syncBounds);
+    observer.observe(container);
+    observer.observe(canvas);
+    container.addEventListener('scroll', syncBounds, { passive: true });
+    window.addEventListener('resize', syncBounds);
+    
+    // Initial sync
+    requestAnimationFrame(syncBounds);
+
+    return () => {
+        observer.disconnect();
+        container.removeEventListener('scroll', syncBounds);
+        window.removeEventListener('resize', syncBounds);
+    };
+  }, []);
+
   return (
-    <div className="messages-container" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', background: '#1e1e24', overflowY: 'auto' }}>
+    <div 
+        className="messages-container" 
+        style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', background: '#1e1e24', overflowY: 'auto' }}
+    >
       <canvas 
           ref={canvasRef} 
           id="secure-canvas-renderer"

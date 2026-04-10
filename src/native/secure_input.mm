@@ -5,8 +5,18 @@
 #include <Carbon/Carbon.h>
 #import <AppKit/AppKit.h>
 #import <Foundation/Foundation.h>
+#import <AVFoundation/AVFoundation.h>
+#import <CoreVideo/CoreVideo.h>
+#import <CoreMedia/CoreMedia.h>
+#import <VideoToolbox/VideoToolbox.h>
+#import <LocalAuthentication/LocalAuthentication.h>
+#import <Security/Security.h>
+
 #include <thread>
 #include <atomic>
+
+static LAContext *globalLAContext = nil;
+static SecKeyRef globalPrivateKey = NULL;
 
 #include <array>
 #include <sys/mman.h>
@@ -14,6 +24,7 @@
 #include <sys/ptrace.h>
 #include <sys/sysctl.h>
 #include <os/log.h>
+#include <mach/mach_time.h>
 
 // Dynamic P_TRACED verification (Anti-DTrace / Anti-LLDB)
 static bool amIBeingDebugged(void) {
@@ -47,6 +58,9 @@ std::atomic<uint64_t> last_interaction_time{0};
 CFMachPortRef eventTap = nullptr;
 CFRunLoopSourceRef runLoopSource = nullptr;
 Napi::ThreadSafeFunction tsfn;
+
+AVSampleBufferDisplayLayer *globalDrmLayer = nil; // Store globally to render frames into it
+CALayer *globalMaskLayer = nil;
 
 #include <IOKit/IOKitLib.h>
 
@@ -356,12 +370,47 @@ Napi::Value Backspace(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, true);
 }
 
-// ── Native Screen Scraping Block (AppKit exclusion) ────────────────
+// ── Native Screen Scraping Block (AppKit exclusion & DRM) ────────────────
+
 Napi::Value ProtectWindow(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     void (^protectBlock)(void) = ^{
         for (NSWindow *window in [NSApp windows]) {
+            // Level 1: Standard Window Server Exclusion
             window.sharingType = NSWindowSharingNone;
+            
+            // Level 2: Advanced DRM / CALayer Protection (Hardware Compositing)
+            // Dynamically attempt to apply AVSampleBufferDisplayLayer with preventsCapture.
+            @try {
+                if (window.contentView) {
+                    window.contentView.wantsLayer = YES;
+                    
+                    CALayer *maskLayer = [CALayer layer];
+                    maskLayer.masksToBounds = YES;
+                    globalMaskLayer = maskLayer;
+                    
+                    AVSampleBufferDisplayLayer *drmLayer = [[AVSampleBufferDisplayLayer alloc] init];
+                    drmLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
+                    // For crisp UI text rendering inside the video pipeline
+                    drmLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+                    
+                    // On macOS 11+, preventsCapture explicitly encrypts the CALayer 
+                    // via HDCP rendering pipelines (Requires entitlements in strict Sandbox)
+                    if ([drmLayer respondsToSelector:@selector(setPreventsCapture:)]) {
+                        drmLayer.preventsCapture = YES;
+                    }
+                    
+                    globalDrmLayer = drmLayer;
+                    [maskLayer addSublayer:drmLayer];
+                    
+                    // Insert at bottom so standard React DOM renders over it ideally.
+                    // Note: True hardware encryption of the DOM requires rendering the text directly into CVPixelBuffers
+                    // and feeding them to this layer. This serves as the DRM boundary establishment.
+                    [window.contentView.layer addSublayer:maskLayer];
+                }
+            } @catch (NSException *exception) {
+                NSLog(@"Monolith DRM Initialization Exception: %@", exception.reason);
+            }
         }
     };
     if ([NSThread isMainThread]) {
@@ -369,6 +418,270 @@ Napi::Value ProtectWindow(const Napi::CallbackInfo& info) {
     } else {
         dispatch_sync(dispatch_get_main_queue(), protectBlock);
     }
+    return Napi::Boolean::New(env, true);
+}
+
+Napi::Value GenerateSEPKey(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    NSData *tag = [@"com.monolith.sep.ipc.key" dataUsingEncoding:NSUTF8StringEncoding];
+
+    NSDictionary *deleteQuery = @{
+        (__bridge id)kSecClass: (__bridge id)kSecClassKey,
+        (__bridge id)kSecAttrApplicationTag: tag
+    };
+    SecItemDelete((__bridge CFDictionaryRef)deleteQuery);
+
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    __block BOOL authSuccess = NO;
+    __block NSError *authError = nil;
+
+    if (!globalLAContext) {
+        globalLAContext = [[LAContext alloc] init];
+    }
+
+    [globalLAContext evaluatePolicy:LAPolicyDeviceOwnerAuthentication localizedReason:@"Initialize Secure IPC Bridge" reply:^(BOOL success, NSError * _Nullable error) {
+        authSuccess = success;
+        authError = error ? [error copy] : nil;
+        dispatch_semaphore_signal(semaphore);
+    }];
+
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+
+    if (!authSuccess) {
+        NSString *errDesc = authError ? [authError localizedDescription] : @"Biometric validation failed.";
+        Napi::Error::New(env, [errDesc UTF8String]).ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    CFErrorRef error = NULL;
+    SecAccessControlRef accessControl = SecAccessControlCreateWithFlags(
+        kCFAllocatorDefault,
+        kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
+        kSecAccessControlPrivateKeyUsage,
+        &error
+    );
+
+    if (!accessControl) {
+        if (error) CFRelease(error);
+        Napi::Error::New(env, "Failed to create SEP Access Control").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    if (globalPrivateKey) {
+        CFRelease(globalPrivateKey);
+        globalPrivateKey = NULL;
+    }
+
+    NSDictionary *privateKeyAttrs = @{
+        (__bridge id)kSecAttrIsPermanent: @NO,
+        (__bridge id)kSecAttrApplicationTag: tag,
+        (__bridge id)kSecAttrAccessControl: (__bridge id)accessControl
+    };
+
+    NSDictionary *attributes = @{
+        (__bridge id)kSecAttrKeyType: (__bridge id)kSecAttrKeyTypeECSECPrimeRandom,
+        (__bridge id)kSecAttrKeySizeInBits: @256,
+        (__bridge id)kSecAttrTokenID: (__bridge id)kSecAttrTokenIDSecureEnclave,
+        (__bridge id)kSecPrivateKeyAttrs: privateKeyAttrs
+    };
+
+    CFErrorRef privateKeyError = NULL;
+    SecKeyRef privateKey = SecKeyCreateRandomKey((__bridge CFDictionaryRef)attributes, &privateKeyError);
+    CFRelease(accessControl);
+
+    if (!privateKey) {
+        NSString *errStr = @"Apple Secure Enclave Hardware exception";
+        if (privateKeyError) {
+            CFStringRef desc = CFErrorCopyDescription(privateKeyError);
+            errStr = [NSString stringWithFormat:@"Apple Secure Enclave Hardware exception: %@", desc];
+            CFRelease(desc);
+            CFRelease(privateKeyError);
+        }
+        Napi::Error::New(env, [errStr UTF8String]).ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    SecKeyRef publicKey = SecKeyCopyPublicKey(privateKey);
+    globalPrivateKey = privateKey;
+
+    if (!publicKey) {
+        Napi::Error::New(env, "Failed to extract public key").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    CFErrorRef pubKeyError = NULL;
+    CFDataRef publicKeyData = SecKeyCopyExternalRepresentation(publicKey, &pubKeyError);
+    CFRelease(publicKey);
+
+    if (!publicKeyData) {
+        if (pubKeyError) CFRelease(pubKeyError);
+        Napi::Error::New(env, "Failed to copy public key data").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    NSData *pubData = (NSData *)publicKeyData;
+    NSString *base64Pub = [pubData base64EncodedStringWithOptions:0];
+    CFRelease(publicKeyData);
+
+    return Napi::String::New(env, [base64Pub UTF8String]);
+}
+Napi::Value SignSEPPayload(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBuffer()) return Napi::Boolean::New(env, false);
+    
+    Napi::Buffer<uint8_t> buf = info[0].As<Napi::Buffer<uint8_t>>();
+    NSData *inputData = [NSData dataWithBytes:buf.Data() length:buf.Length()];
+    
+    if (!globalLAContext) {
+        globalLAContext = [[LAContext alloc] init];
+        globalLAContext.touchIDAuthenticationAllowableReuseDuration = 3600; // 1 hour max
+    }
+    
+    if (!globalPrivateKey) {
+        Napi::Error::New(env, "Ephemeral Hardware Key not initialized.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    
+    CFErrorRef error = NULL;
+    CFDataRef signature = SecKeyCreateSignature(globalPrivateKey, kSecKeyAlgorithmECDSASignatureMessageX962SHA256, (__bridge CFDataRef)inputData, &error);
+    
+    if (!signature) {
+        if (error) CFRelease(error);
+        return env.Undefined();
+    }
+    
+    NSData *sigData = (NSData *)signature;
+    NSString *base64Sig = [sigData base64EncodedStringWithOptions:0];
+    CFRelease(signature);
+    
+    return Napi::String::New(env, [base64Sig UTF8String]);
+}
+
+Napi::Value SyncCanvasBounds(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsObject()) return Napi::Boolean::New(env, false);
+    
+    Napi::Object obj = info[0].As<Napi::Object>();
+    double cX = obj.Get("containerX").As<Napi::Number>().DoubleValue();
+    double cY = obj.Get("containerY").As<Napi::Number>().DoubleValue();
+    double cW = obj.Get("containerW").As<Napi::Number>().DoubleValue();
+    double cH = obj.Get("containerH").As<Napi::Number>().DoubleValue();
+    
+    double cvX = obj.Get("canvasX").As<Napi::Number>().DoubleValue();
+    double cvY = obj.Get("canvasY").As<Napi::Number>().DoubleValue();
+    double cvW = obj.Get("canvasW").As<Napi::Number>().DoubleValue();
+    double cvH = obj.Get("canvasH").As<Napi::Number>().DoubleValue();
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (globalMaskLayer && globalDrmLayer && [NSApp windows].count > 0) {
+            NSWindow *window = [NSApp windows].firstObject;
+            CGRect winBounds = window.contentView.bounds;
+            
+            // Convert Web DOM standard coordinates (Y Down) to macOS AppKit native coordinates (Y Up)
+            CGRect containerRect = CGRectMake(cX, winBounds.size.height - cY - cH, cW, cH);
+            
+            // The canvas is INSIDE the container, so its relative offset
+            CGRect canvasRect = CGRectMake(cvX - cX, (winBounds.size.height - cvY - cvH) - containerRect.origin.y, cvW, cvH);
+            
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            globalMaskLayer.frame = containerRect;
+            globalDrmLayer.frame = canvasRect;
+            [CATransaction commit];
+        }
+    });
+    return Napi::Boolean::New(env, true);
+}
+
+Napi::Value SetLayerVisibility(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBoolean()) return Napi::Boolean::New(env, false);
+    
+    bool visible = info[0].As<Napi::Boolean>().Value();
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (globalMaskLayer) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            globalMaskLayer.hidden = visible ? NO : YES;
+            [CATransaction commit];
+        }
+    });
+    return Napi::Boolean::New(env, true);
+}
+
+Napi::Value RenderDRMFrame(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBuffer()) return Napi::Boolean::New(env, false);
+    
+    Napi::Buffer<uint8_t> buf = info[0].As<Napi::Buffer<uint8_t>>();
+    NSData *data = [NSData dataWithBytes:buf.Data() length:buf.Length()];
+    
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!globalDrmLayer) return;
+        
+        CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)data);
+        if (!provider) return;
+        CGImageRef image = CGImageCreateWithPNGDataProvider(provider, NULL, true, kCGRenderingIntentDefault);
+        CGDataProviderRelease(provider);
+        if (!image) return;
+        
+        size_t width = CGImageGetWidth(image);
+        size_t height = CGImageGetHeight(image);
+        
+        if (globalDrmLayer && [NSApp windows].count > 0) {
+            // ResizeObserver handles bounds completely asynchronously now! No redundant origin mapping.
+        }
+        
+        CVPixelBufferRef pixelBuffer = NULL;
+        NSDictionary *options = @{
+            (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
+            (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES
+        };
+        CVReturn status = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32ARGB, (__bridge CFDictionaryRef)options, &pixelBuffer);
+        
+        if (status == kCVReturnSuccess && pixelBuffer) {
+            CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+            void *pxdata = CVPixelBufferGetBaseAddress(pixelBuffer);
+            CGColorSpaceRef rgbColorSpace = CGColorSpaceCreateDeviceRGB();
+            CGContextRef context = CGBitmapContextCreate(pxdata, width, height, 8, CVPixelBufferGetBytesPerRow(pixelBuffer), rgbColorSpace, kCGImageAlphaPremultipliedFirst);
+            
+            if (context) {
+                // Clear and render
+                CGContextClearRect(context, CGRectMake(0, 0, width, height));
+                CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
+                CGContextRelease(context);
+                
+                CMVideoFormatDescriptionRef formatDescription = NULL;
+                CMVideoFormatDescriptionCreateForImageBuffer(kCFAllocatorDefault, pixelBuffer, &formatDescription);
+                
+                CMSampleTimingInfo timingInfo;
+                timingInfo.duration = kCMTimeInvalid;
+                timingInfo.decodeTimeStamp = kCMTimeInvalid;
+                timingInfo.presentationTimeStamp = CMTimeMake(mach_absolute_time(), 1000000000); 
+                
+                CMSampleBufferRef sampleBuffer = NULL;
+                CMSampleBufferCreateReadyWithImageBuffer(kCFAllocatorDefault, pixelBuffer, formatDescription, &timingInfo, &sampleBuffer);
+                
+                if (sampleBuffer) {
+                    CFArrayRef attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, YES);
+                    CFMutableDictionaryRef dict = (CFMutableDictionaryRef)CFArrayGetValueAtIndex(attachments, 0);
+                    CFDictionarySetValue(dict, kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
+                    
+                    if ([globalDrmLayer status] == AVQueuedSampleBufferRenderingStatusFailed) {
+                        [globalDrmLayer flush];
+                    }
+                    [globalDrmLayer enqueueSampleBuffer:sampleBuffer];
+                    CFRelease(sampleBuffer);
+                }
+                if (formatDescription) CFRelease(formatDescription);
+            }
+            CGColorSpaceRelease(rgbColorSpace);
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+            CVPixelBufferRelease(pixelBuffer);
+        }
+        CGImageRelease(image);
+    });
+    
     return Napi::Boolean::New(env, true);
 }
 
@@ -429,6 +742,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "mlockallEnvironment"), Napi::Function::New(env, LockProcessEnv));
     exports.Set(Napi::String::New(env, "isHardwareLocked"), Napi::Function::New(env, IsHardwareLocked));
     exports.Set(Napi::String::New(env, "protectWindow"), Napi::Function::New(env, ProtectWindow));
+    exports.Set(Napi::String::New(env, "setLayerVisibility"), Napi::Function::New(env, SetLayerVisibility));
+    exports.Set(Napi::String::New(env, "renderDRMFrame"), Napi::Function::New(env, RenderDRMFrame));
+    exports.Set(Napi::String::New(env, "syncCanvasBounds"), Napi::Function::New(env, SyncCanvasBounds));
+    exports.Set(Napi::String::New(env, "signSEPPayload"), Napi::Function::New(env, SignSEPPayload));
+    exports.Set(Napi::String::New(env, "generateSEPKey"), Napi::Function::New(env, GenerateSEPKey));
     return exports;
 }
 

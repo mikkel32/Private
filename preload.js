@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   sendStandardMessage: (configObj, text) => ipcRenderer.invoke("send-standard-message", configObj, text),
   stopGeneration: () => ipcRenderer.invoke("stop-generation"),
   drainVault: () => ipcRenderer.invoke("secure-drain"),
+  syncCanvasBounds: (bounds) => ipcRenderer.send("secure-canvas-bounds", bounds),
+  setSecureLayerVisibility: (visible) => ipcRenderer.send("secure-layer-visibility", visible),
   // Protocol Omega: Network Dispatch
   secureNetworkDispatch: (configObj) => ipcRenderer.send("secure-network-dispatch", configObj),
   fetchHistory: (id) => ipcRenderer.send("fetch-history", id),

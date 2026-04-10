@@ -14,11 +14,27 @@
 ; memory mapping, IPC, and network capabilities not overtly permitted.
 ; ==============================================================================
 
-; --- CORE OS FUNCTIONALITY ---
-(allow process-exec*)
+; Restricted RCE Binary Execution Array (Zero-Trust Branching)
+(allow process-exec 
+    (literal (string-append (param "PROJECT_DIR") "/sep_crypto"))
+    (subpath (string-append (param "VENV_DIR") "/bin"))
+    (subpath "/opt/homebrew/Cellar")
+)
 (allow process-fork)
 (allow sysctl-read)
 (allow mach-lookup) ; Apple Silicon CoreFoundation/Metal requires extensive IPC to function
+
+; --- EXPLICIT EXFILTRATION C&C NULLIFICATIONS ---
+; Explictly destroy pathways attempting to escape sandbox constraints or spy generically.
+(deny mach-lookup (global-name "com.apple.SecurityServer"))
+(deny mach-lookup (global-name "com.apple.analyticsd"))
+(deny mach-lookup (global-name "com.apple.diagnosticd"))
+(deny mach-lookup (global-name "com.apple.syslogd"))
+(deny mach-lookup (global-name "com.apple.system.logger"))
+(deny mach-lookup (global-name "com.apple.windowserver.active"))
+(deny mach-lookup (global-name "com.apple.awdd"))
+(deny mach-lookup (global-name "com.apple.CoreLocation.agent"))
+
 (allow iokit-open) ; Metal requires IOKit user-client connections for GPU VRAM allocation
 (allow signal)
 

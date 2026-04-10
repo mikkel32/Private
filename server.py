@@ -25,6 +25,26 @@ os.environ["DO_NOT_TRACK"] = "1"
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
 import time
+import sys
+import ctypes
+import hashlib
+from ctypes.util import find_library
+
+# --- LAYER: ANTI-FORENSIC OS MEMORY DEPLOYMENT ---
+try:
+    MCL_CURRENT = 1
+    MCL_FUTURE = 2
+    _libc_path = find_library('c')
+    if _libc_path:
+        _libc = ctypes.CDLL(_libc_path)
+        _res = _libc.mlockall(MCL_CURRENT | MCL_FUTURE)
+        if _res != 0:
+            print(f"[SECURITY FAIL] mlockall() denied (code {_res}). System swap vulnerability possible.", file=sys.stderr)
+        else:
+            print("[SECURITY ZERO-TRUST] Virtual Memory Paging disabled! Daemon securely locked to RAM.", file=sys.stderr)
+except Exception as e:
+    print(f"[SECURITY ERROR] Unable to execute mlockall(): {e}", file=sys.stderr)
+
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -125,13 +145,8 @@ _GGML_NAME_MAP = {v: k.upper() for k, v in _GGML_TYPE_MAP.items()}
 
 app = FastAPI(title="Gemma 4 E4B Inference", version="2.0.0")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:5173", "file://"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Extreme Privacy: Completely Disabled CORS. The React frontend MUST NOT fetch directly.
+# All requests are securely proxied via the NodeJS Main process natively utilizing AES pipelines.
 
 # ── Model Loading ────────────────────────────────────────────────────────────
 
@@ -163,6 +178,28 @@ def get_model() -> Llama:
         print(f"[server] GPU layers: {GPU_LAYERS}")
         print(f"[server] KV cache: K={k_name}, V={v_name} (4-bit quantized)")
         print(f"[server] Flash Attention: {'enabled' if FLASH_ATTN else 'disabled'}")
+
+        # Secure Boot Cryptographic Validation
+        expected_hash = os.environ.get("MODEL_SHA256")
+        if expected_hash:
+            print(f"[server] Executing Secure Boot Validation (SHA256) on {MODEL_PATH}...", file=sys.stderr)
+            sha256 = hashlib.sha256()
+            try:
+                with open(MODEL_PATH, "rb") as f:
+                    for chunk in iter(lambda: f.read(65536), b""):
+                        sha256.update(chunk)
+                file_hash = sha256.hexdigest()
+                if file_hash != expected_hash:
+                    # Critical Panic
+                    print(f"FATAL BOOT ERROR: Model cryptography failed! Expected {expected_hash}, got {file_hash}", file=sys.stderr)
+                    sys.exit(1)
+                else:
+                    print(f"[server] SECURE BOOT SUCCESS! Cryptographic Integrity matched {file_hash[:8]}...", file=sys.stderr)
+            except Exception as e:
+                print(f"FATAL BOOT ERROR: IO Check failure: {e}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print("[server] [WARNING] Secure Boot Validation DISABLED (`MODEL_SHA256` not set). Malware can swap logic natively.", file=sys.stderr)
 
         _model = Llama(
             model_path=MODEL_PATH,
@@ -205,23 +242,66 @@ def inject_thinking(messages: list[dict], enable: bool, budget: int) -> list[dic
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
-# Phase 7: Localhost Hijacking Mitigation
-# All requests must bear the inherited IPC_SECRET.
-# Otherwise local applications (malware, browser extensions) can curl our local AI server.
+# Phase 7: Localhost Hijacking Mitigation & Physical Cryptographic Verification
+# We rely exclusively on Apple's Secure Enclave Coprocessor.
 from fastapi import Depends, HTTPException
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-import hmac
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives import hashes
+from cryptography.exceptions import InvalidSignature
 
-ipc_secret_env = os.environ.get("IPC_SECRET")
-security = HTTPBearer()
+sep_pub_key_env = os.environ.get("SEP_PUB_KEY")
+vk = None
 
-def verify_ipc_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if not ipc_secret_env:
-        raise HTTPException(status_code=500, detail="Server misconfigured: IPC_SECRET missing")
+if sep_pub_key_env:
+    try:
+        raw_bytes = base64.b64decode(sep_pub_key_env)
+        if len(raw_bytes) == 65 and raw_bytes[0] == 4:
+            x = int.from_bytes(raw_bytes[1:33], 'big')
+            y = int.from_bytes(raw_bytes[33:], 'big')
+            pn = ec.EllipticCurvePublicNumbers(x, y, ec.SECP256R1())
+            vk = pn.public_key()
+    except Exception as e:
+        print("[server] SEP Pub Key Parse Error:", e)
+
+async def verify_ipc_token(request: Request):
+    if not vk:
+        raise HTTPException(status_code=500, detail="Server misconfigured: Secure Enclave Key missing")
     
-    # Constant-time comparison to prevent timing attacks
-    if not hmac.compare_digest(credentials.credentials, ipc_secret_env):
-        raise HTTPException(status_code=401, detail="Unauthorized: Localhost API Hijacking Detected")
+    timestamp_str = request.headers.get("X-SEP-Timestamp")
+    if not timestamp_str:
+        raise HTTPException(status_code=401, detail="Unauthorized: Missing Timestamp Nonce")
+        
+    try:
+        timestamp_ms = int(timestamp_str)
+        import time
+        current_time_ms = int(time.time() * 1000)
+        
+        if abs(current_time_ms - timestamp_ms) > 2000:
+            raise HTTPException(status_code=401, detail="Unauthorized: Packet Replay Attack Detected or Clock Drifted excessively.")
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Malformed Timestamp")
+    
+    signature_b64 = request.headers.get("X-SEP-Signature")
+    if not signature_b64:
+        raise HTTPException(status_code=401, detail="Unauthorized: Missing SEP Signature")
+    
+    try:
+        sig = base64.b64decode(signature_b64)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Malformed SEP Signature")
+        
+    body = await request.body()
+    # For GET requests without a body, we mathematically sign the endpoint path
+    payload_base = body if body else request.url.path.encode('utf-8')
+    
+    # Mathematically lock the payload array to the timestamp nonce exactly as formatted by Node.js
+    payload_bound = payload_base + timestamp_str.encode('utf-8')
+    
+    try:
+        vk.verify(sig, payload_bound, ec.ECDSA(hashes.SHA256()))
+    except InvalidSignature:
+        raise HTTPException(status_code=401, detail="Unauthorized: SEP Hardware Cryptographic Verification Failed")
+        
     return True
 
 # ── Routes ───────────────────────────────────────────────────────────────────

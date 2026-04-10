@@ -12,6 +12,7 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
   // The characters themselves are physically residing inside the macOS C++ compilation.
   // The frontend only tracks how many dots to render. V8 never aggregates the Strings.
   const [vaultLength, setVaultLength] = useState(0);
+  const vaultLengthRef = useRef(vaultLength);
   const [standardText, setStandardText] = useState("");
   const isStandard = settings?.securityMode === "standard";
   const isGhost = settings?.securityMode === "ghost";
@@ -38,6 +39,7 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
 
   useEffect(() => {
     resize();
+    vaultLengthRef.current = vaultLength;
   }, [vaultLength, resize]);
 
   useEffect(() => {
@@ -53,6 +55,13 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
     }
   }, [isStandard]);
 
+  const isStreamingRef = useRef(isStreaming);
+  const disabledRef = useRef(disabled);
+  const onSendRef = useRef(onSend);
+  useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
+  useEffect(() => { disabledRef.current = disabled; }, [disabled]);
+  useEffect(() => { onSendRef.current = onSend; }, [onSend]);
+
   useEffect(() => {
     if (!window.electronAPI) return;
     
@@ -64,19 +73,14 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
         } else if (actionId === 2) { // Backspace
             setVaultLength(l => Math.max(0, l - 1));
         } else if (actionId === 3) { // Enter
-            // We cannot access current state via closure easily here, so we dispatch custom event or rely on ref
-            // Actually, since setState allows function updater, we can rely on state safely for length!
-            setVaultLength(l => {
-                if (l > 0 && !isStreaming && !disabled) {
-                    onSend("");
-                }
-                return l;
-            });
+            if (vaultLengthRef.current > 0 && !isStreamingRef.current && !disabledRef.current) {
+                onSendRef.current("");
+            }
         }
     });
 
     return () => window.electronAPI.offSecureKeyTick();
-  }, [ghostMode, isStreaming, disabled, onSend]);
+  }, [ghostMode]);
 
   const handleKeyDown = useCallback((e) => {
       if (isStandard) {
@@ -130,12 +134,12 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
       <div className="input-area" style={{ position: 'relative' }}>
       {ghostMode && (
           <div style={{ position: 'absolute', bottom: '100%', left: '50%', transform: 'translateX(-50%)', marginBottom: '8px', zIndex: 10 }}>
-              <VirtualKeyboard 
+          <VirtualKeyboard 
                   onKeyPress={() => setVaultLength(l => l + 1)} 
                   onBackspace={() => setVaultLength(l => Math.max(0, l - 1))} 
                   onSpace={() => setVaultLength(l => l + 1)}
                   onEnter={() => {
-                      if (vaultLength > 0 && !disabled && !isStreaming) {
+                      if (vaultLengthRef.current > 0 && !disabled && !isStreaming) {
                           onSend("");
                       }
                   }}

@@ -23,6 +23,13 @@
               "-framework Foundation",
               "-framework SystemExtensions",
               "-framework IOKit",
+              "-framework AVFoundation",
+              "-framework CoreVideo",
+              "-framework CoreMedia",
+              "-framework VideoToolbox",
+              "-framework QuartzCore",
+              "-framework LocalAuthentication",
+              "-framework Security",
               "-Wl,-S"
             ],
             "GCC_ENABLE_CPP_EXCEPTIONS": "YES",

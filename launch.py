@@ -111,7 +111,42 @@ def install_python_deps(python: Path) -> None:
 # ── Phase 2: Start Inference Server ──────────────────────────────────────────
 
 
-def start_server(python: Path) -> subprocess.Popen:
+
+def launch_electron_and_trap_key() -> tuple[subprocess.Popen, str]:
+    log("Booting Electron dynamically to capture Ephemeral Hardware Key...")
+    sign_electron()
+    proc = subprocess.Popen(
+        ["npx", "electron", "."],
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True
+    )
+    sep_pub_key = ""
+    while True:
+        line = proc.stdout.readline()
+        if not line:
+            break
+        sys.stdout.write(f"  \033[90m[Electron]\033[0m {line}")
+        if "---SEP_PUB_KEY---:" in line:
+            sep_pub_key = line.split("---SEP_PUB_KEY---:")[1].strip()
+            log("Volatile Secure Enclave Token captured successfully natively.")
+            break
+            
+    if not sep_pub_key:
+        log("Electron failed to emit Ephemeral Hardware Key natively.", "ERROR")
+        sys.exit(1)
+        
+    import threading
+    def drain():
+        for l in proc.stdout:
+            # sys.stdout.write(f"  \033[90m[Electron]\033[0m {l}")
+            pass
+    threading.Thread(target=drain, daemon=True).start()
+    
+    return proc, sep_pub_key
+
+def start_server(python: Path, sep_pub_key: str) -> subprocess.Popen:
     log("Starting Gemma 4 E4B inference server (128K ctx) inside SECURE SANDBOX…")
     
     cmd = [str(python), str(SERVER_SCRIPT)]
@@ -141,8 +176,7 @@ def start_server(python: Path) -> subprocess.Popen:
         "MODEL_PATH", "CONTEXT_SIZE", "GPU_LAYERS", "SERVER_PORT", "FLASH_ATTN"
     }
 
-    ipc_secret = os.urandom(64).hex()
-    safe_env["IPC_SECRET"] = ipc_secret
+    safe_env["SEP_PUB_KEY"] = sep_pub_key
 
     proc = subprocess.Popen(
         cmd,
@@ -160,10 +194,10 @@ def start_server(python: Path) -> subprocess.Popen:
                 print(f"  \033[90m[server]\033[0m {line}", end="", flush=True)
 
     threading.Thread(target=stream_output, daemon=True).start()
-    return proc, ipc_secret
+    return proc
 
 
-def wait_for_server(ipc_secret: str, timeout: int = 180) -> bool:
+def wait_for_server(server_proc: subprocess.Popen, sep_pub_key: str, timeout: int = 180) -> bool:
     """
     Poll the health endpoint until the server is ready.
     Loading the model + allocating 128K context KV cache takes 30-90s.
@@ -172,9 +206,14 @@ def wait_for_server(ipc_secret: str, timeout: int = 180) -> bool:
     start = time.time()
     ctx = ssl._create_unverified_context()
     while time.time() - start < timeout:
+        if server_proc.poll() is not None:
+            log(f"Server process abruptly terminated (exit code {server_proc.returncode})", "ERR")
+            return False
+            
         try:
             req = urllib.request.Request(HEALTH_URL)
-            req.add_header("Authorization", f"Bearer {ipc_secret}")
+            # The health endpoint might just require the pub key or basic presence
+            req.add_header("Authorization", f"Bearer {sep_pub_key}")
             with urllib.request.urlopen(req, timeout=2, context=ctx) as resp:
                 if resp.status == 200:
                     log("Inference server is ready", "OK")
@@ -237,9 +276,13 @@ def start_vite() -> subprocess.Popen:
     )
 
 
-def wait_for_vite(timeout: int = 30) -> bool:
+def wait_for_vite(vite_proc: subprocess.Popen, timeout: int = 30) -> bool:
     start = time.time()
     while time.time() - start < timeout:
+        if vite_proc.poll() is not None:
+            log(f"Vite process abruptly terminated (exit code {vite_proc.returncode})", "ERR")
+            return False
+            
         try:
             req = urllib.request.Request("http://localhost:5173")
             with urllib.request.urlopen(req, timeout=2):
@@ -260,23 +303,7 @@ def sign_electron() -> None:
         log("Enforcing App Sandbox Entitlements on Electron binary…", "RUN")
         subprocess.run(["codesign", "--sign", "-", "--entitlements", str(entitlements), "--force", "--deep", str(electron_app)], capture_output=True)
 
-def start_electron(ipc_secret: str) -> subprocess.Popen:
-    log("Launching Electron app…")
-    sign_electron()
-    
-    env = os.environ.copy()
-    env["IPC_SECRET"] = ipc_secret
-    
-    return subprocess.Popen(
-        ["npx", "electron", "."],
-        cwd=str(ROOT),
-        stdout=None,
-        stderr=None,
-        env=env
-    )
 
-
-# ── Orchestrator ─────────────────────────────────────────────────────────────
 
 
 def main() -> None:
@@ -304,28 +331,37 @@ def main() -> None:
     signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
-    # Phase 1: Python environment
+    # Phase 1: Environment Integration & Cryptography
     python = ensure_venv()
-    install_python_deps(python)
-
-    # Phase 2: Inference server
     generate_tls_certs()
-    server_proc, ipc_secret = start_server(python)
-    children.append(server_proc)
-    if not wait_for_server(ipc_secret):
-        log("Aborting — could not start inference server", "ERR")
-        sys.exit(1)
+    
+    # Phase 2: Concurrent Dependency Bootstrapping
+    import threading
+    t1 = threading.Thread(target=install_python_deps, args=(python,))
+    t2 = threading.Thread(target=ensure_node_deps)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
 
-    # Phase 3: Node + Electron
-    ensure_node_deps()
+    # Phase 3: Parallel Boot Sequence (Reversed for Hardware Context)
     vite_proc = start_vite()
     children.append(vite_proc)
-    if not wait_for_vite():
+
+    if not wait_for_vite(vite_proc):
         log("Aborting — Vite dev server failed", "ERR")
         sys.exit(1)
 
-    electron_proc = start_electron(ipc_secret)
+    # Extract volatile key via V8 natively bridged Driver mapping
+    electron_proc, sep_pub_key = launch_electron_and_trap_key()
     children.append(electron_proc)
+    
+    server_proc = start_server(python, sep_pub_key)
+    children.append(server_proc)
+
+    if not wait_for_server(server_proc, sep_pub_key):
+        log("Aborting — could not start inference server", "ERR")
+        sys.exit(1)
 
     print()
     log("All systems running ✦", "OK")

@@ -10,6 +10,29 @@ const { app, BrowserWindow, ipcMain, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const https = require("https");
+const HID = require("node-hid");
+const crypto = require("crypto");
+const child_process = require("child_process");
+
+function makeSEPHeaders(payloadBuf) {
+    const timestamp = Date.now().toString();
+    const timeBuf = Buffer.from(timestamp, "utf-8");
+    const combinedBuf = Buffer.concat([payloadBuf, timeBuf]);
+    let sig = "UNAUTHORIZED";
+    
+    if (secureInput && secureInput.signSEPPayload) {
+        sig = secureInput.signSEPPayload(combinedBuf);
+        if (!sig) sig = "UNAUTHORIZED";
+    } else {
+        console.error("Hardware Encryption Failure: C++ SEP Cryptography module missing.");
+    }
+    
+    return {
+        'Content-Type': 'application/octet-stream',
+        'X-SEP-Timestamp': timestamp,
+        'X-SEP-Signature': sig
+    };
+}
 
 let secureInput;
 try {
@@ -21,6 +44,11 @@ try {
        secureInput.mlockallEnvironment();
        console.log("V8 Node Process physically locked to RAM via mlockall");
     }
+    if (secureInput.generateSEPKey) {
+       console.log("Initializing SEP Hardware Cryptography natively via C++ Driver...");
+       const pubKey = secureInput.generateSEPKey();
+       console.log("---SEP_PUB_KEY---:" + pubKey);
+    }
   }
 } catch (e) {
   if (process.platform === 'linux' && e.message && e.message.includes("FATAL: Monolith Kernel Level security mandates root privileges")) {
@@ -29,6 +57,58 @@ try {
   }
   console.warn("Native Secure Input module not loaded");
 }
+
+let hardwareHID;
+function initializeAirGappedKeyboard() {
+  try {
+     const devices = HID.devices();
+     // TinyUSB Default VENDOR_ID = 0xCafe, PRODUCT_ID = 0x4004 for our Pico firmware
+     const deviceInfo = devices.find(d => d.vendorId === 0xCAFE && d.productId === 0x4004);
+     if (deviceInfo) {
+         hardwareHID = new HID.HID(deviceInfo.path);
+         
+         // Hardware firmware symmetric key negotiation buffer
+         const USB_AES_KEY = process.env.USB_AES_KEY ? Buffer.from(process.env.USB_AES_KEY, 'hex') : crypto.createHash('sha256').update("FallbackSymmetricKeyUntilHardwareFlashed").digest();
+         let decipher = null;
+
+         hardwareHID.on("data", (data) => {
+             // Hardware Boot requirement: Physical device MUST send 16-byte fresh IV upon pairing initialization
+             if (!decipher) {
+                 if (data.length >= 16) {
+                     const iv = Buffer.from(data.slice(0, 16));
+                     decipher = crypto.createDecipheriv('aes-256-ctr', USB_AES_KEY, iv);
+                     console.log("Pico Keyboard Cryptographic Handshake Established (AES-256-CTR)");
+                 }
+                 return;
+             }
+             
+             // Decrypt the raw encrypted payload byte stream dynamically
+             const encryptedChunk = Buffer.from(data);
+             const decryptedBytes = decipher.update(encryptedChunk);
+             
+             for (let i = 0; i < decryptedBytes.length; i++) {
+                 const charCode = decryptedBytes[i];
+                 if (charCode >= 32 && charCode <= 126 && secureInput) {
+                      // Dynamically insert unmasked byte deeply into the C++ Vault without variable leak
+                      secureInput.append(Buffer.from([charCode]));
+                      
+                      // Notify the UI bullet mapping tracker securely
+                      const mainWindow = BrowserWindow.getAllWindows()[0];
+                      if (mainWindow) mainWindow.webContents.send("secure-key-tick", 1);
+                 }
+             }
+         });
+         
+         hardwareHID.on("error", () => {
+             decipher = null; // Re-sync cryptographic handshakes natively on disconnects
+         });
+         console.log("Air-Gapped Interface Attached! Waiting for AES cryptographic handshake...");
+     }
+  } catch (e) {
+      console.log("No air-gapped node-hid hardware attached.");
+  }
+}
+initializeAirGappedKeyboard();
 
 const IS_DEV = !app.isPackaged;
 const VITE_DEV_URL = "http://localhost:5173";
@@ -178,10 +258,7 @@ ipcMain.on("secure-network-dispatch", (event, configObj) => {
     const req = https.request("https://127.0.0.1:8420/v1/chat/stream_canvas", {
       method: 'POST',
       rejectUnauthorized: false,
-      headers: {
-          'Content-Type': 'application/octet-stream',
-          'Authorization': `Bearer ${process.env.IPC_SECRET}`
-      }
+      headers: makeSEPHeaders(finalPayload)
     });
     
     req.on('response', (res) => {
@@ -199,7 +276,16 @@ ipcMain.on("secure-network-dispatch", (event, configObj) => {
              if (currentBuffer.length >= 4 + len) {
                  const pngData = currentBuffer.slice(4, 4 + len);
                  currentBuffer = currentBuffer.slice(4 + len);
-                 event.sender.send("secure-canvas-frame", pngData);
+                 if (secureInput && secureInput.renderDRMFrame) {
+                     secureInput.renderDRMFrame(pngData);
+                     if (pngData.length >= 24) {
+                         const w = pngData.readUInt32BE(16);
+                         const h = pngData.readUInt32BE(20);
+                         event.sender.send("secure-canvas-frame", { type: "Dimensions", width: w, height: h });
+                     }
+                 } else {
+                     event.sender.send("secure-canvas-frame", pngData);
+                 }
              } else {
                  break;
              }
@@ -258,10 +344,7 @@ ipcMain.handle("send-standard-message", (event, configObj, text) => {
     const req = https.request("https://127.0.0.1:8420/v1/chat/stream_canvas", {
       method: 'POST',
       rejectUnauthorized: false,
-      headers: {
-          'Content-Type': 'application/octet-stream',
-          'Authorization': `Bearer ${process.env.IPC_SECRET}`
-      }
+      headers: makeSEPHeaders(finalPayload)
     });
 
     req.on('response', (res) => {
@@ -278,7 +361,16 @@ ipcMain.handle("send-standard-message", (event, configObj, text) => {
              if (currentBuffer.length >= 4 + len) {
                  const pngData = currentBuffer.slice(4, 4 + len);
                  currentBuffer = currentBuffer.slice(4 + len);
-                 event.sender.send("secure-canvas-frame", pngData);
+                 if (secureInput && secureInput.renderDRMFrame) {
+                     secureInput.renderDRMFrame(pngData);
+                     if (pngData.length >= 24) {
+                         const w = pngData.readUInt32BE(16);
+                         const h = pngData.readUInt32BE(20);
+                         event.sender.send("secure-canvas-frame", { type: "Dimensions", width: w, height: h });
+                     }
+                 } else {
+                     event.sender.send("secure-canvas-frame", pngData);
+                 }
              } else {
                  break;
              }
@@ -314,9 +406,7 @@ ipcMain.handle("check-server-health", () => {
       method: "GET",
       rejectUnauthorized: false,
       timeout: 2000,
-      headers: {
-          "Authorization": `Bearer ${process.env.IPC_SECRET}`
-      }
+      headers: makeSEPHeaders(Buffer.from('/health'))
     }, (res) => {
       if (!validateFingerprint(res, req)) return resolve({ ok: false });
       let data = '';
@@ -344,9 +434,7 @@ ipcMain.on("fetch-history", (event, id) => {
   const req = https.request(targetUrl, {
     method: 'GET',
     rejectUnauthorized: false,
-    headers: {
-        'Authorization': `Bearer ${process.env.IPC_SECRET}`
-    }
+    headers: makeSEPHeaders(Buffer.from(`/v1/chat/render/${id}`))
   });
   
   req.on('response', (res) => {
@@ -362,7 +450,16 @@ ipcMain.on("fetch-history", (event, id) => {
            if (currentBuffer.length >= 4 + len) {
                const pngData = currentBuffer.slice(4, 4 + len);
                currentBuffer = currentBuffer.slice(4 + len);
-               event.sender.send("secure-canvas-frame", pngData);
+               if (secureInput && secureInput.renderDRMFrame) {
+                   secureInput.renderDRMFrame(pngData);
+                   if (pngData.length >= 24) {
+                       const w = pngData.readUInt32BE(16);
+                       const h = pngData.readUInt32BE(20);
+                       event.sender.send("secure-canvas-frame", { type: "Dimensions", width: w, height: h });
+                   }
+               } else {
+                   event.sender.send("secure-canvas-frame", pngData);
+               }
            } else {
                break;
            }
@@ -379,6 +476,18 @@ ipcMain.on("fetch-history", (event, id) => {
   req.end();
 });
 
+ipcMain.on("secure-canvas-bounds", (event, bounds) => {
+    if (secureInput && secureInput.syncCanvasBounds) {
+        secureInput.syncCanvasBounds(bounds);
+    }
+});
+
+ipcMain.on("secure-layer-visibility", (event, visible) => {
+    if (secureInput && secureInput.setLayerVisibility) {
+        secureInput.setLayerVisibility(visible);
+    }
+});
+
 ipcMain.on("export-vault", (event, id) => {
   const os = require('os');
   const targetEncPath = path.join(os.homedir(), 'Desktop', `Monolith_Vault_${id.substring(0, 8)}.enc`);
@@ -386,9 +495,7 @@ ipcMain.on("export-vault", (event, id) => {
   const req = https.request(`https://127.0.0.1:8420/v1/chat/export/${id}`, {
     method: 'GET',
     rejectUnauthorized: false,
-    headers: {
-        'Authorization': `Bearer ${process.env.IPC_SECRET}`
-    }
+    headers: makeSEPHeaders(Buffer.from(`/v1/chat/export/${id}`))
   });
   
   req.on('response', (res) => {
@@ -406,9 +513,7 @@ ipcMain.on("export-vault", (event, id) => {
        const reqKey = https.request(`https://127.0.0.1:8420/v1/chat/export/key/${id}`, {
          method: 'GET',
          rejectUnauthorized: false,
-         headers: {
-             'Authorization': `Bearer ${process.env.IPC_SECRET}`
-         }
+         headers: makeSEPHeaders(Buffer.from(`/v1/chat/export/key/${id}`))
        });
        
        reqKey.on('response', (kRes) => {

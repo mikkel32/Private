@@ -9,7 +9,19 @@
 constexpr size_t MAX_SECURE_SIZE = 8192;
 uint8_t secure_buffer[MAX_SECURE_SIZE];
 size_t secure_len = 0;
-uint8_t XOR_KEY = 0; // Dynamic DMA masking key
+
+uint32_t SESSION_SEED = 0;
+// Generate chaotic permutation mask mapped globally to array index
+uint8_t get_mask_for_index(size_t index) {
+    uint32_t state = SESSION_SEED + (uint32_t)index * 0x9E3779B9;
+    state ^= state >> 15;
+    state *= 0x85ebca6b;
+    state ^= state >> 13;
+    state *= 0xc2b2ae35;
+    state ^= state >> 16;
+    return (uint8_t)(state & 0xFF);
+}
+
 std::atomic<bool> worker_running(false);
 std::atomic<uint64_t> last_interaction_time(0);
 // Keyboard Input struct matching Kernel WDF driver
@@ -61,8 +73,9 @@ void FetchKeysFromKernelBroker() {
                 } else {
                     actionId = 1;
                     if (secure_len < MAX_SECURE_SIZE) {
-                        // Map MakeCode to generic VK for now, or just send raw makecode
-                        secure_buffer[secure_len++] = (uint8_t)keyData.MakeCode ^ XOR_KEY;
+                        // Map MakeCode natively into rolling sequence mask
+                        secure_buffer[secure_len] = (uint8_t)keyData.MakeCode ^ get_mask_for_index(secure_len);
+                        secure_len++;
                     }
                 }
                 
@@ -179,11 +192,14 @@ Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     AutoWiper wiper;
     
-    // Decrypt the payload before passing it to V8
+    // Decrypt the payload natively bypassing Memory constraints
     uint8_t temp_buffer[MAX_SECURE_SIZE];
     for (size_t i = 0; i < secure_len; i++) {
-        temp_buffer[i] = secure_buffer[i] ^ XOR_KEY;
+        temp_buffer[i] = secure_buffer[i] ^ get_mask_for_index(i);
     }
+    
+    // Scramble deterministic seed forward to protect next array mathematically
+    SESSION_SEED ^= (uint32_t)rand();
     
     Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, temp_buffer, secure_len);
     SecureZeroMemory(temp_buffer, MAX_SECURE_SIZE); // Wipe temp buffer immediately
@@ -246,10 +262,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
         VirtualLock(secure_buffer, MAX_SECURE_SIZE);
         memory_locked = true;
         
-        // Generate random XOR mask for this session (simulated with generic seed as wincrypt is heavy)
+        // Generate chaotic origin seed for the stream sequence
         srand((unsigned int)time(NULL));
-        XOR_KEY = (uint8_t)(rand() % 255);
-        if (XOR_KEY == 0) XOR_KEY = 0xAA; // Avoid 0-mask
+        SESSION_SEED = (uint32_t)rand();
     }
 #endif
     
