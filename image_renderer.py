@@ -11,8 +11,11 @@ except:
     except:
         _font = ImageFont.load_default()
 
-def render_chat_history(history: list[dict], streaming_content: str = "", width: int = 800) -> bytes:
+def render_chat_history(history: list[dict], streaming_content: str | bytearray | bytes = "", width: int = 800) -> bytes:
     """ Renders the complete conversation history + streaming delta into a raw PNG """
+    if isinstance(streaming_content, (bytearray, bytes)):
+        streaming_content = streaming_content.decode('utf-8', 'replace')
+        
     lines = []
     
     # Add User/Assistant prefixes and word wrap

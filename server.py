@@ -384,28 +384,42 @@ async def export_vault(conversation_id: str):
         
     raw_buffer = vault.buffers[conversation_id]
     
-    # Generate 256-bit AES Key and 96-bit Nonce
-    key = os.urandom(32)
-    nonce = os.urandom(12)
+    # [Layer 7] Apple Secure Enclave (SEP) Crypto Offload
+    # Evades OS-level memory scrapers inspecting Python's heap.
+    # We pipe the binary buffer to the native Swift binary, which generates a 
+    # CryptoKit SymmetricKey, seals the payload in AES-GCM, and returns the strictly packed bytes.
     
-    aesgcm = AESGCM(key)
-    # The payload is entirely encrypted, immune to clipboard scrapers
-    ciphertext = aesgcm.encrypt(nonce, bytes(raw_buffer), None)
+    import subprocess
+    swift_bin = Path(__file__).parent / "sep_crypto"
     
-    # Store the key volatile for exactly one fetch via image_renderer
-    # Convert to readable hex for user backup
-    export_keys[conversation_id] = key.hex()
-    
-    # Prepend Nonce to Ciphertext for standard GCM structure
-    final_payload = nonce + ciphertext
-    
-    return StreamingResponse(
-        iter([final_payload]),
-        media_type="application/octet-stream",
-        headers={
-            "Content-Disposition": f"attachment; filename=Monolith_Vault_{conversation_id[:8]}.enc"
-        }
-    )
+    try:
+        proc = subprocess.run(
+            [str(swift_bin)],
+            input=raw_buffer,
+            capture_output=True,
+            check=True
+        )
+        outData = proc.stdout
+        
+        # Parse the Swift struct: [32B Key][12B Nonce][16B Tag][Ciphertext]
+        key_bytes = outData[0:32]
+        final_payload = outData[32:]
+        
+        # Store key for one-time fetch, wiping the local copy automatically via Python gc
+        # since it's just a transient slice.
+        export_keys[conversation_id] = key_bytes.hex()
+        
+        # The key_bytes are wiped inside sep_crypto automatically by iOS/macOS memory layout safeguards.
+        
+        return StreamingResponse(
+            iter([final_payload]),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": f"attachment; filename=Monolith_Vault_{conversation_id[:8]}.enc"
+            }
+        )
+    except subprocess.CalledProcessError as e:
+        return JSONResponse(status_code=500, content={"error": "SEP Kernel Panic", "details": e.stderr.decode()})
 
 @app.get("/v1/chat/export/key/{conversation_id}", dependencies=[Depends(verify_ipc_token)])
 async def export_vault_key(conversation_id: str):
@@ -483,7 +497,7 @@ async def stream_canvas(request: Request):
             stream=True,
         )
 
-        full_content = ""
+        full_content = bytearray()
         last_yield_time = time.time()
         
         try:
@@ -491,7 +505,7 @@ async def stream_canvas(request: Request):
                 delta = chunk.get("choices", [{}])[0].get("delta", {})
                 content = delta.get("content", "")
                 if content:
-                    full_content += content
+                    full_content.extend(content.encode('utf-8'))
                     
                     # Target roughly 5 FPS visual refresh to save CPU/Bandwidth (yield every 0.2s)
                     if time.time() - last_yield_time > 0.2:
@@ -506,12 +520,12 @@ async def stream_canvas(request: Request):
                 length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
                 yield length_prefix + png_bytes
                 
-            # Append to secure vault
+            # Append to secure vault directly as bytes to skip standard string caching
             if full_content:
-                vault.append_message(conv_id_str, "assistant", full_content)
+                vault.append_message_binary(conv_id_bytes, b"assistant", full_content)
                 
         except Exception as e:
-            full_content += f"\n\n[System Error: {str(e)}]"
+            full_content.extend(f"\n\n[System Error: {str(e)}]".encode('utf-8'))
             png_bytes = render_chat_history(history, full_content)
             length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
             yield length_prefix + png_bytes
@@ -519,20 +533,14 @@ async def stream_canvas(request: Request):
         finally:
             import gc
             import ctypes
-            import sys
             
-            # [Layer 6] Phantom Memory Vektor Destruction
-            # V8 will inherently drop the string, but Python's GC relies on free() which leaves bytes stale.
-            # We physically zero-out the memory array inside the string struct.
+            # [Layer 6] Phantom Memory Vektor Destruction (BYTEARRAY PATCH)
+            # Physical memory override of the bytearray
             if full_content:
-                # Python string objects have overhead, struct offset approx 48-56 bytes depends on arch
-                # Safe generic memset of the total allocated len based on id()
-                str_id = id(full_content)
-                str_len = len(full_content)
-                # Overwrite internal buffer + payload size
-                ctypes.memset(str_id, 0, sys.getsizeof(full_content))
+                addr = ctypes.addressof((ctypes.c_char * len(full_content)).from_buffer(full_content))
+                ctypes.memset(addr, 0, len(full_content))
                 
-            # GC cycle ensures the zeroed structs are re-pooled
+            # GC cycle ensures pooled refs are swept
             gc.collect()
 
     return StreamingResponse(

@@ -241,8 +241,17 @@ def wait_for_vite(timeout: int = 30) -> bool:
     return False
 
 
+def sign_electron() -> None:
+    if not IS_APPLE_SILICON: return
+    electron_app = NODE_MODULES / "electron" / "dist" / "Electron.app"
+    entitlements = ROOT / "entitlements.mac.plist"
+    if electron_app.exists() and entitlements.exists():
+        log("Enforcing App Sandbox Entitlements on Electron binary…", "RUN")
+        subprocess.run(["codesign", "--sign", "-", "--entitlements", str(entitlements), "--force", "--deep", str(electron_app)], capture_output=True)
+
 def start_electron() -> subprocess.Popen:
     log("Launching Electron app…")
+    sign_electron()
     return subprocess.Popen(
         ["npx", "electron", "."],
         cwd=str(ROOT),
