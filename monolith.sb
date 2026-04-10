@@ -37,19 +37,27 @@
 ; --- FILE SYSTEM ISOLATION ---
 (allow file-read-metadata) ; Needed for python to resolve stat() and dtags
 
-; Whitelisted READ access
+; Whitelisted READ access (Strict Minimum for Python & Metal Execution)
 (allow file-read-data
-    (subpath "/System/Library")
+    (subpath "/System/Library/Frameworks")
+    (subpath "/System/Library/PrivateFrameworks")
     (subpath "/usr/lib")
-    (subpath "/usr/share")
-    (subpath "/usr/local")
-    (subpath "/opt/homebrew")
+    (subpath "/usr/share/zoneinfo")
+    (subpath "/opt/homebrew/opt/python@3.13")
+    (subpath "/opt/homebrew/Cellar/python@3.13")
     (subpath "/Users/mikkelmynderup/Desktop/Privacy/.venv")
-    (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private")
+    (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private/server.py")
+    (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private/image_renderer.py")
+    (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private/secure_memory.py")
+    (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private/sep_crypto")
+    (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private/gemma-4-E4B-it-heretic-Q5_K_M.gguf")
+    (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private/node_modules/llama-cpp-python")
     (subpath "/Users/mikkelmynderup/Library/Caches")
-    (subpath "/private/var")
+    (subpath "/private/var/folders")
     (subpath "/private/tmp")
-    (subpath "/dev")
+    (subpath "/dev/urandom")
+    (subpath "/dev/random")
+    (subpath "/dev/null")
 )
 
 ; Allow writing ONLY to essential transient locations required by Python & macOS Metal.

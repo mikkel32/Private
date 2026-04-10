@@ -48,70 +48,12 @@ CFMachPortRef eventTap = nullptr;
 CFRunLoopSourceRef runLoopSource = nullptr;
 Napi::ThreadSafeFunction tsfn;
 
-CGEventRef HookCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void* refcon) {
-    if (!tap_active.load()) return event;
-
-    if (type == kCGEventKeyDown) {
-        CGEventFlags flags = CGEventGetFlags(event);
-        CGKeyCode keycode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
-        
-        // Block Cmd+V (Paste) natively
-        if (keycode == 9 && (flags & kCGEventFlagMaskCommand)) {
-            return NULL;
-        }
-
-        int64_t action = 0; // 0 = default, 1 = character append, 2 = backspace, 3 = enter
-        
-        if (keycode == 51) { // Backspace
-            if (secure_len > 0) {
-                char& last = secure_buffer[secure_len - 1];
-                memset_s(&last, 1, 0, 1);
-                secure_len--;
-                action = 2;
-                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-            }
-        } else if (keycode == 36 || keycode == 76) { // Return / Enter
-            action = 3;
-        } else {
-            // Translate keycode to character
-            UniChar chars[4];
-            UniCharCount actualStringLength = 0;
-            CGEventKeyboardGetUnicodeString(event, 4, &actualStringLength, chars);
-            
-            if (actualStringLength > 0 && secure_len < MAX_SECURE_SIZE) {
-                // Approximate unichar -> char via utf8 for standard ascii
-                // To avoid heap str evaluation, simply downcast if it's < 128
-                char ch = (char)(chars[0] & 0xFF);
-                secure_buffer[secure_len++] = ch ^ XOR_KEY;
-                action = 1;
-                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-            }
-        }
-        
-        if (action > 0 && tsfn) {
-            tsfn.BlockingCall(reinterpret_cast<void*>(action), [](Napi::Env env, Napi::Function jsCallback, void* value) {
-                jsCallback.Call({ Napi::Number::New(env, reinterpret_cast<int64_t>(value)) });
-            });
-            return NULL; // Swallow keystroke!
-        }
-    }
-    return event;
-}
-
+// CGEventTap (Ring 3 User-Space Hook) has been completely eradicated per Phase 15 protocol.
+// Hardware keystroke extraction MUST happen in Ring 0 (secure_kernel_mac.cpp / .dext)
 void StartTapWorker() {
-    CGEventMask eventMask = CGEventMaskBit(kCGEventKeyDown);
-    eventTap = CGEventTapCreate(kCGHIDEventTap, kCGHeadInsertEventTap, static_cast<CGEventTapOptions>(0), eventMask, HookCallback, nullptr);
-    if (!eventTap) {
-        hardware_grab_success.store(false);
-        return;
-    }
-    hardware_grab_success.store(true);
-    
-    runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
-    CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopCommonModes);
-    CGEventTapEnable(eventTap, true);
-    
-    CFRunLoopRun();
+    // Failing closed automatically forces the UI into Ghost Protocol (On-Screen Keyboard)
+    hardware_grab_success.store(false);
+    return;
 }
 
 void CrashHandler(int signum) {
@@ -148,11 +90,8 @@ std::thread priority_thread;
 void EnforcePriorityLoop() {
     while (true) {
         std::this_thread::sleep_for(std::chrono::seconds(2));
-        if (tap_active.load() && eventTap) {
-            if (!CGEventTapIsEnabled(eventTap)) {
-                CGEventTapEnable(eventTap, true);
-            }
-        }
+        // Priority loop previously managed CGEventTap reinstatements.
+        // It now stands dormant pending formal DriverKit IPC connection mapping.
     }
 }
 
@@ -218,6 +157,12 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
     Napi::Buffer<uint8_t> buf = info[0].As<Napi::Buffer<uint8_t>>();
     size_t length = buf.Length();
     uint8_t* data = buf.Data();
+    
+    // Exteme Memory Bounds Validation to prevent IPC scrapers/overflows
+    if (length > MAX_SECURE_SIZE || secure_len + length > MAX_SECURE_SIZE) {
+        os_log_error(OS_LOG_DEFAULT, "FATAL: IPC Buffer overflow detected. Discarding payload.");
+        return Napi::Boolean::New(env, false);
+    }
     
     last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
     
