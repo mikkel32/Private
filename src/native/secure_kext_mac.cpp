@@ -25,6 +25,7 @@ public:
     virtual void free() {}
     virtual kern_return_t Start(IOService *provider) { return kIOReturnSuccess; }
     virtual kern_return_t Stop(IOService *provider) { return kIOReturnSuccess; }
+    virtual void registerService(IOOptionBits options = 0) {}
 };
 class IOUserClient {};
 class IOMemoryDescriptor {};

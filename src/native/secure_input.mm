@@ -224,6 +224,7 @@ Napi::Value EnableProtection(const Napi::CallbackInfo& info) {
 
 Napi::Value DisableProtection(const Napi::CallbackInfo& info) {
     tap_active.store(false);
+    hardware_grab_success.store(false);
     DisableSecureEventInput();
     return Napi::Boolean::New(info.Env(), true);
 }

@@ -15,15 +15,13 @@
       "ldflags": [ "-Wl,-s" ],
       "conditions": [
         ["OS=='mac'", {
-          "sources": [ "src/native/secure_input.mm", "src/native/secure_kernel_mac.cpp" ],
+          "sources": [ "src/native/secure_input.mm", "src/native/secure_kext_mac.cpp" ],
           "xcode_settings": {
             "OTHER_LDFLAGS": [
               "-framework Carbon",
               "-framework AppKit",
               "-framework Foundation",
               "-framework SystemExtensions",
-              "-weak_framework DriverKit",
-              "-weak_framework HIDDriverKit",
               "-Wl,-S"
             ],
             "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
