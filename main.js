@@ -117,6 +117,21 @@ ipcMain.on("secure-backspace", () => {
 ipcMain.on("secure-wipe", () => {
   if (secureInput) secureInput.wipe();
 });
+
+let extremeModeActive = false;
+ipcMain.handle("toggle-extreme-mode", (event, enable) => {
+  extremeModeActive = enable;
+  if (secureInput) {
+    if (enable) {
+      secureInput.disableSecureInput();
+      console.log("EXTREME MODE: Physical Hardware Keyboards Disabled. Ghost Protocol ONLY.");
+    } else {
+      secureInput.enableSecureInput();
+      console.log("EXTREME MODE: Restored Physical Keyboard processing.");
+    }
+  }
+  return extremeModeActive;
+});
 ipcMain.handle("secure-drain", async () => {
   if (!secureInput) return Buffer.alloc(0);
   // Returns Buffer containing payload and securely wipes the C++ physical RAM in one command
