@@ -156,7 +156,10 @@ ipcMain.on("secure-network-dispatch", (event, configObj) => {
     const req = https.request("https://127.0.0.1:8420/v1/chat/stream_canvas", {
       method: 'POST',
       rejectUnauthorized: false,
-      headers: { 'Content-Type': 'application/octet-stream' }
+      headers: {
+          'Content-Type': 'application/octet-stream',
+          'Authorization': `Bearer ${process.env.IPC_SECRET}`
+      }
     });
     
     req.on('response', (res) => {
@@ -213,7 +216,10 @@ ipcMain.handle("check-server-health", () => {
     const req = https.request("https://127.0.0.1:8420/health", {
       method: "GET",
       rejectUnauthorized: false,
-      timeout: 2000
+      timeout: 2000,
+      headers: {
+          "Authorization": `Bearer ${process.env.IPC_SECRET}`
+      }
     }, (res) => {
       if (!validateFingerprint(res, req)) return resolve({ ok: false });
       let data = '';
@@ -240,7 +246,10 @@ ipcMain.on("fetch-history", (event, id) => {
   const targetUrl = `https://127.0.0.1:8420/v1/chat/render/${id}`;
   const req = https.request(targetUrl, {
     method: 'GET',
-    rejectUnauthorized: false
+    rejectUnauthorized: false,
+    headers: {
+        'Authorization': `Bearer ${process.env.IPC_SECRET}`
+    }
   });
   
   req.on('response', (res) => {
@@ -279,7 +288,10 @@ ipcMain.on("export-vault", (event, id) => {
   
   const req = https.request(`https://127.0.0.1:8420/v1/chat/export/${id}`, {
     method: 'GET',
-    rejectUnauthorized: false
+    rejectUnauthorized: false,
+    headers: {
+        'Authorization': `Bearer ${process.env.IPC_SECRET}`
+    }
   });
   
   req.on('response', (res) => {
@@ -296,7 +308,10 @@ ipcMain.on("export-vault", (event, id) => {
        // The file is secure. Now securely request the PNG raster of the password.
        const reqKey = https.request(`https://127.0.0.1:8420/v1/chat/export/key/${id}`, {
          method: 'GET',
-         rejectUnauthorized: false
+         rejectUnauthorized: false,
+         headers: {
+             'Authorization': `Bearer ${process.env.IPC_SECRET}`
+         }
        });
        
        reqKey.on('response', (kRes) => {

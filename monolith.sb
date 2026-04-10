@@ -35,7 +35,22 @@
     (literal "/dev/urandom")
 )
 
-; Deny executing arbitrary child processes (except basic dyld mapping) to block reverse shells
-; (allow process-exec (literal "/opt/homebrew/Cellar/python@3.13/...")) 
-; *We omit strict process-exec blocking as Python sub-libs frequently fork for IPC. 
-; The network and file-write blocks are sufficient to neutralize post-exploitation payloads.*
+; --- PROCESS EXECUTION ISOLATION ---
+; Deny executing standard shells. Even if RCE is achieved, attackers cannot spawn a command shell
+(deny process-exec 
+    (literal "/bin/sh") 
+    (literal "/bin/bash") 
+    (literal "/bin/zsh") 
+    (literal "/bin/dash")
+)
+
+; --- DATA THEFT ISOLATION ---
+; Deny reading critical host locations where sensitive data is stored globally
+(deny file-read-data
+    (subpath "/Users")
+    (subpath "/Volumes")
+    (subpath "/etc")
+)
+
+; Explicitly allow reading from the project directory, bypassing the user block
+(allow file-read-data (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private"))

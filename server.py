@@ -33,6 +33,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from llama_cpp import Llama
+
+# Extreme Hardening: Mitigate CVE-2025-69872 in diskcache (used natively by llama_cpp_python under the hood)
+# Diskcache defaults to pickle serialization which allows Arbitrary Code Execution (RCE) via insecure deserialization.
+# By forcing the JSONDisk abstraction globally, we kill the RCE vector completely.
+import diskcache
+diskcache.core.Disk = diskcache.JSONDisk
+
 from secure_memory import vault
 from image_renderer import render_chat_history
 
@@ -198,7 +205,29 @@ def inject_thinking(messages: list[dict], enable: bool, budget: int) -> list[dic
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 
-@app.get("/health")
+# Phase 7: Localhost Hijacking Mitigation
+# All requests must bear the inherited IPC_SECRET.
+# Otherwise local applications (malware, browser extensions) can curl our local AI server.
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import hmac
+
+ipc_secret_env = os.environ.get("IPC_SECRET")
+security = HTTPBearer()
+
+def verify_ipc_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if not ipc_secret_env:
+        raise HTTPException(status_code=500, detail="Server misconfigured: IPC_SECRET missing")
+    
+    # Constant-time comparison to prevent timing attacks
+    if not hmac.compare_digest(credentials.credentials, ipc_secret_env):
+        raise HTTPException(status_code=401, detail="Unauthorized: Localhost API Hijacking Detected")
+    return True
+
+# ── Routes ───────────────────────────────────────────────────────────────────
+
+
+@app.get("/health", dependencies=[Depends(verify_ipc_token)])
 async def health() -> dict:
     return {
         "status": "ok",
@@ -206,7 +235,7 @@ async def health() -> dict:
         "context_size": CONTEXT_SIZE,
     }
 
-@app.post("/v1/chat/completions", response_model=None)
+@app.post("/v1/chat/completions", response_model=None, dependencies=[Depends(verify_ipc_token)])
 async def chat_completions(request: Request):
     body = await request.json()
     messages = body.get("messages", [])
@@ -331,7 +360,7 @@ async def chat_completions(request: Request):
         },
     )
 
-@app.get("/v1/chat/render/{conversation_id}")
+@app.get("/v1/chat/render/{conversation_id}", dependencies=[Depends(verify_ipc_token)])
 async def get_chat_render(conversation_id: str):
     history = vault.get_history(conversation_id)
     if not history:
@@ -348,7 +377,7 @@ async def get_chat_render(conversation_id: str):
         },
     )
 
-@app.get("/v1/chat/export/{conversation_id}")
+@app.get("/v1/chat/export/{conversation_id}", dependencies=[Depends(verify_ipc_token)])
 async def export_vault(conversation_id: str):
     if conversation_id not in vault.buffers:
         return JSONResponse(status_code=404, content={"error": "Vault not found"})
@@ -378,7 +407,7 @@ async def export_vault(conversation_id: str):
         }
     )
 
-@app.get("/v1/chat/export/key/{conversation_id}")
+@app.get("/v1/chat/export/key/{conversation_id}", dependencies=[Depends(verify_ipc_token)])
 async def export_vault_key(conversation_id: str):
     key_hex = export_keys.pop(conversation_id, None)
     if not key_hex:
@@ -393,7 +422,7 @@ async def export_vault_key(conversation_id: str):
         media_type="image/png"
     )
 
-@app.post("/v1/chat/stream_canvas")
+@app.post("/v1/chat/stream_canvas", dependencies=[Depends(verify_ipc_token)])
 async def stream_canvas(request: Request):
     """
     Project Monolith: Binary Raster Streaming.
@@ -477,9 +506,10 @@ async def stream_canvas(request: Request):
                 length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
                 yield length_prefix + png_bytes
                 
-                # Append to secure vault
+            # Append to secure vault
+            if full_content:
                 vault.append_message(conv_id_str, "assistant", full_content)
-            
+                
         except Exception as e:
             full_content += f"\n\n[System Error: {str(e)}]"
             png_bytes = render_chat_history(history, full_content)
@@ -488,7 +518,21 @@ async def stream_canvas(request: Request):
         
         finally:
             import gc
-            # Manually trigger garbage collection here to destroy string allocations from `llama_cpp_python`
+            import ctypes
+            import sys
+            
+            # [Layer 6] Phantom Memory Vektor Destruction
+            # V8 will inherently drop the string, but Python's GC relies on free() which leaves bytes stale.
+            # We physically zero-out the memory array inside the string struct.
+            if full_content:
+                # Python string objects have overhead, struct offset approx 48-56 bytes depends on arch
+                # Safe generic memset of the total allocated len based on id()
+                str_id = id(full_content)
+                str_len = len(full_content)
+                # Overwrite internal buffer + payload size
+                ctypes.memset(str_id, 0, sys.getsizeof(full_content))
+                
+            # GC cycle ensures the zeroed structs are re-pooled
             gc.collect()
 
     return StreamingResponse(

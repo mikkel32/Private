@@ -24,6 +24,21 @@ DRIVER_INITIALIZE DriverEntry;
 EVT_WDF_DRIVER_DEVICE_ADD EvtDriverDeviceAdd;
 EVT_WDF_IO_QUEUE_IO_INTERNAL_DEVICE_CONTROL EvtIoInternalDeviceControl;
 
+// Struct to store original connection data
+typedef struct _DEVICE_EXTENSION {
+    CONNECT_DATA UpperConnectData;
+} DEVICE_EXTENSION, *PDEVICE_EXTENSION;
+
+WDF_DECLARE_CONTEXT_TYPE_WITH_NAME(DEVICE_EXTENSION, FilterGetData)
+
+// The malicious/secure callback that intercepts the keystrokes
+VOID SecureKeyboardCallback(
+    _In_    PDEVICE_OBJECT DeviceObject,
+    _In_    PKEYBOARD_INPUT_DATA InputDataStart,
+    _In_    PKEYBOARD_INPUT_DATA InputDataEnd,
+    _Inout_ PULONG InputDataConsumed
+);
+
 /**
  * DriverEntry - Entry point for the Windows Kernel driver.
  */
@@ -97,26 +112,60 @@ VOID EvtIoInternalDeviceControl(
     UNREFERENCED_PARAMETER(InputBufferLength);
     WDFDEVICE hDevice = WdfIoQueueGetDevice(Queue);
 
-    // The IOCTL_KEYBOARD_QUERY_ATTRIBUTES / SET_INDICATORS are standard, but the raw 
-    // data retrieval flows through a registered Connect Service Callback loop.
-    // In a full implementation, we hook the IOCTL_COMMAND_CONNECT callback here
-    // and attach our own ISR/DPC routine to extract `PKEYBOARD_INPUT_DATA`.
-    
-    // PSEUDO-IMPLEMENTATION for the Data Extractor:
-    /*
-        if (IoControlCode == IOCTL_KEYBOARD_CONNECT) {
-            // Replace the upper connection's ClassService callback with our own SecureCallback
-            // Our SecureCallback will push the keys to an inverted IOCTL queue where our 
-            // C++ user-space N-API addon via `DeviceIoControl()` is polling for bytes.
-            //
-            // Then we return success without calling the original ClassService, effectively 
-            // blinding the OS completely to the keystroke!
+    // THE ACTUAL IMPLEMENTATION for Data Extraction via IRP_MJ_INTERNAL_DEVICE_CONTROL
+    if (IoControlCode == IOCTL_KEYBOARD_CONNECT) {
+        // Only process if the buffer is large enough for CONNECT_DATA
+        if (InputBufferLength >= sizeof(CONNECT_DATA)) {
+            PCONNECT_DATA connectData;
+            NTSTATUS devStatus = WdfRequestRetrieveInputBuffer(Request, sizeof(CONNECT_DATA), (PVOID*)&connectData, NULL);
+            
+            if (NT_SUCCESS(devStatus)) {
+                PDEVICE_EXTENSION devExt = FilterGetData(hDevice);
+                
+                // 1. Save the original Windows OS ClassService callback pointer
+                devExt->UpperConnectData = *connectData;
+                
+                // 2. Overwrite the callback with our own secure function!
+                connectData->ClassService = SecureKeyboardCallback;
+                
+                KdPrint(("MonolithKbdFilter: Bootlegged Keyboard Connection via IOCTL_KEYBOARD_CONNECT!\n"));
+            }
         }
-    */
+    }
 
     // Forward the request down the stack if we are not actively in "Ghost Protocol" blocking mode
     WDF_REQUEST_SEND_OPTIONS options;
     WDF_REQUEST_SEND_OPTIONS_INIT(&options, WDF_REQUEST_SEND_OPTION_SEND_AND_FORGET);
     WdfRequestSend(Request, WdfDeviceGetIoTarget(hDevice), &options);
+}
+
+/**
+ * SecureKeyboardCallback - Blinds the OS to keystrokes.
+ * Replaces the default kbdclass callback.
+ */
+VOID SecureKeyboardCallback(
+    _In_    PDEVICE_OBJECT DeviceObject,
+    _In_    PKEYBOARD_INPUT_DATA InputDataStart,
+    _In_    PKEYBOARD_INPUT_DATA InputDataEnd,
+    _Inout_ PULONG InputDataConsumed
+) {
+    // 1. Grab our device extension context mapping back to the WDF framework
+    WDFDEVICE hDevice = WdfWdmDeviceGetWdfDeviceHandle(DeviceObject);
+    PDEVICE_EXTENSION devExt = FilterGetData(hDevice);
+
+    // 2. [ZERO-TRUST GHOST PROTOCOL INITIATED]
+    // Here we can securely push `InputDataStart` to an inverted IOCTL Event Queue 
+    // waiting for our React/C++ addon.
+    
+    // For now, we drop the keystrokes (Consume them entirely) so no user-space logger sees them
+    ULONG numKeys = (ULONG)(InputDataEnd - InputDataStart);
+    *InputDataConsumed = numKeys;
+    
+    // NOTE: To disable Ghost Protocol and let the OS receive the typing:
+    /*
+       (*(PSERVICE_CALLBACK_ROUTINE) devExt->UpperConnectData.ClassService)(
+           devExt->UpperConnectData.ClassDeviceObject,
+           InputDataStart, InputDataEnd, InputDataConsumed);
+    */
 }
 #endif

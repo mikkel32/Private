@@ -91,10 +91,11 @@ export default function VirtualKeyboard({ onKeyPress, onBackspace, onSpace, onEn
             
             ctx.fillStyle = '#1a1a24';
             ctx.fillRect(x, y, KEY_W, KEY_H);
-            ctx.strokeStyle = '#444';
+            ctx.strokeStyle = '#222';
             ctx.strokeRect(x, y, KEY_W, KEY_H);
             
-            ctx.fillStyle = '#ccc';
+            // Phase 9 Ghost Mode: Ultra-low contrast
+            ctx.fillStyle = '#2b2b35';
             const char = isShift ? k.u : k.l;
             ctx.fillText(char, x + KEY_W/2, y + KEY_H/2);
             
@@ -106,33 +107,42 @@ export default function VirtualKeyboard({ onKeyPress, onBackspace, onSpace, onEn
         x = PADDING;
         
         // Shift
-        ctx.fillStyle = isShift ? '#444' : '#222';
+        ctx.fillStyle = isShift ? '#252530' : '#15151e';
         ctx.fillRect(x, y, 90, KEY_H);
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = '#3a3a46';
         ctx.fillText("⇧ SHIFT", x + 45, y + KEY_H/2);
         hitBoxes.push({ x, y, w: 90, h: KEY_H, type: 'shift' });
         x += 90 + GAP;
         
         // Space
-        ctx.fillStyle = '#222';
+        ctx.fillStyle = '#15151e';
         ctx.fillRect(x, y, 150, KEY_H);
         hitBoxes.push({ x, y, w: 150, h: KEY_H, type: 'space' });
         x += 150 + GAP;
         
         // Backspace
-        ctx.fillStyle = '#3a2020';
+        ctx.fillStyle = '#201515';
         ctx.fillRect(x, y, 90, KEY_H);
-        ctx.fillStyle = '#ffaaaa';
+        ctx.fillStyle = '#402a2a';
         ctx.fillText("⌫ BKSP", x + 45, y + KEY_H/2);
         hitBoxes.push({ x, y, w: 90, h: KEY_H, type: 'bksp' });
         x += 90 + GAP;
         
         // Enter
-        ctx.fillStyle = '#203a20';
+        ctx.fillStyle = '#152015';
         ctx.fillRect(x, y, 90, KEY_H);
-        ctx.fillStyle = '#aaffaa';
+        ctx.fillStyle = '#2a402a';
         ctx.fillText("⏎ ENTER", x + 45, y + KEY_H/2);
         hitBoxes.push({ x, y, w: 90, h: KEY_H, type: 'enter' });
+
+        // Phase 9: Adversarial Vector Scanlines
+        for (let idx=0; idx < HEIGHT; idx+=3) {
+            ctx.strokeStyle = `rgba(0,0,0,${Math.random() * 0.4})`;
+            ctx.beginPath();
+            ctx.moveTo(0, idx);
+            ctx.lineTo(WIDTH, idx);
+            ctx.stroke();
+        }
 
         stateRef.current.hitBoxes = hitBoxes;
     }, []);

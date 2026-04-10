@@ -10,10 +10,13 @@
 
 #include <array>
 #include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/ptrace.h>
 
 constexpr size_t MAX_SECURE_SIZE = 8192;
 char secure_buffer[MAX_SECURE_SIZE];
 size_t secure_len = 0;
+uint8_t XOR_KEY = 0; // Dynamic DMA masking key
 bool memory_locked = false;
 std::atomic<bool> tap_active{false};
 std::atomic<bool> hardware_grab_success{false};
@@ -57,7 +60,7 @@ CGEventRef HookCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef even
                 // Approximate unichar -> char via utf8 for standard ascii
                 // To avoid heap str evaluation, simply downcast if it's < 128
                 char ch = (char)(chars[0] & 0xFF);
-                secure_buffer[secure_len++] = ch;
+                secure_buffer[secure_len++] = ch ^ XOR_KEY;
                 action = 1;
                 last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
             }
@@ -194,7 +197,7 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
     
     if (secure_len + length <= MAX_SECURE_SIZE) {
         for (size_t i = 0; i < length; ++i) {
-            secure_buffer[secure_len++] = static_cast<char>(data[i]);
+            secure_buffer[secure_len++] = static_cast<char>(data[i]) ^ XOR_KEY;
         }
     }
     return Napi::Boolean::New(env, true);
@@ -220,7 +223,15 @@ Napi::Value Wipe(const Napi::CallbackInfo& info) {
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     AutoWiper wiper; // Guarantee memory wipe even if Napi Buffer copy throws exception
-    Napi::Buffer<char> buffer = Napi::Buffer<char>::Copy(env, secure_buffer, secure_len);
+    
+    // Decrypt the payload before passing it to V8
+    char temp_buffer[MAX_SECURE_SIZE];
+    for (size_t i = 0; i < secure_len; i++) {
+        temp_buffer[i] = secure_buffer[i] ^ XOR_KEY;
+    }
+    
+    Napi::Buffer<char> buffer = Napi::Buffer<char>::Copy(env, temp_buffer, secure_len);
+    memset_s(temp_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE); // Wipe temp buffer immediately
     
     return buffer;
 }
@@ -257,6 +268,14 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     if (!memory_locked) {
         mlock(secure_buffer, MAX_SECURE_SIZE);
         memory_locked = true;
+        
+        // Phase 10: Anti-Debugger & macOS ReportCrash Dump Prevention
+        // Denies LLDB attach, DTrace inspection, and forces Apple Crash Reporter to ignore the process.
+        ptrace(PT_DENY_ATTACH, 0, 0, 0);
+        
+        // Generate random XOR mask for this session
+        arc4random_buf(&XOR_KEY, 1);
+        if (XOR_KEY == 0) XOR_KEY = 0xAA; // Avoid 0-mask
     }
 
     exports.Set(Napi::String::New(env, "enableSecureInput"), Napi::Function::New(env, EnableProtection));

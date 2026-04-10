@@ -2,12 +2,7 @@
 
 #ifdef __linux__
 
-#include <X11/Xlib.h>
-#include <X11/keysym.h>
-#include <X11/Xutil.h>
 #include <thread>
-#include <atomic>
-#include <array>
 #include <vector>
 #include <sys/mman.h>
 #include <dirent.h>
@@ -17,19 +12,20 @@
 #include <sys/select.h>
 #include <sys/ioctl.h>
 #include <cstring>
+#include <ctime>
+#include <cstdlib>
 
 constexpr size_t MAX_SECURE_SIZE = 8192;
 uint8_t secure_buffer[MAX_SECURE_SIZE];
 size_t secure_len = 0;
+uint8_t XOR_KEY = 0; // Dynamic DMA masking key
 bool memory_locked = false;
 std::atomic<bool> hardware_grab_success(false);
 std::atomic<bool> is_hook_active(false);
 std::atomic<bool> worker_running(false);
 std::atomic<uint64_t> last_interaction_time(0);
-std::thread hook_thread;
 std::thread evdev_thread;
 std::thread dma_sweeper_thread;
-Display* display = nullptr;
 
 Napi::ThreadSafeFunction tsfn;
 
@@ -58,58 +54,6 @@ void SetupCrashHandlers() {
     sigaction(SIGILL, &sa, NULL);
     sigaction(SIGFPE, &sa, NULL);
     sigaction(SIGABRT, &sa, NULL);
-}
-
-void RunMessageLoop() {
-    display = XOpenDisplay(NULL);
-    if (!display) return;
-    
-    Window root = DefaultRootWindow(display);
-    
-    // Grab the keyboard to prevent other X11 clients from seeing KeyPresses
-    int status = XGrabKeyboard(display, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
-    if (status != GrabSuccess) {
-        XCloseDisplay(display);
-        return;
-    }
-    
-    XEvent ev;
-    while (worker_running.load()) {
-        XNextEvent(display, &ev);
-        
-        if (ev.type == KeyPress && is_hook_active.load()) {
-            KeySym keysym = XLookupKeysym(&ev.xkey, 0);
-            
-            // Block Ctrl+V natively in X11
-            if ((keysym == XK_v || keysym == XK_V) && (ev.xkey.state & ControlMask)) {
-                continue; // Swallow paste shortcut
-            }
-            
-            int actionId = 0;
-            
-            if (keysym == XK_BackSpace) {
-                actionId = 2;
-                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-            } else if (keysym == XK_Return || keysym == XK_KP_Enter) {
-                actionId = 3;
-            } else {
-                actionId = 1;
-                last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-                if (secure_len < MAX_SECURE_SIZE) {
-                    secure_buffer[secure_len++] = (uint8_t)(keysym & 0xFF); 
-                }
-            }
-            if (actionId > 0 && tsfn) {
-                auto callback = [actionId](Napi::Env env, Napi::Function jsCallback) {
-                    jsCallback.Call({ Napi::Number::New(env, actionId) });
-                };
-                tsfn.BlockingCall(callback);
-            }
-        }
-    }
-    
-    XUngrabKeyboard(display, CurrentTime);
-    XCloseDisplay(display);
 }
 
 void RunEvdevLoop() {
@@ -181,8 +125,7 @@ void RunEvdevLoop() {
                                 actionId = 1;
                                 last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
                                 // Simple mapping for standard keycodes A-Z (approximation for raw binary log)
-                                if (secure_len < MAX_SECURE_SIZE) {
-                                    secure_buffer[secure_len++] = (uint8_t)(ev.code & 0xFF);
+                                    secure_buffer[secure_len++] = (uint8_t)(ev.code & 0xFF) ^ XOR_KEY;
                                 }
                             }
                             
@@ -249,7 +192,16 @@ Napi::Value Wipe(const Napi::CallbackInfo& info) {
 Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     AutoWiper wiper;
-    Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, secure_buffer, secure_len);
+    
+    // Decrypt the payload before passing it to V8
+    uint8_t temp_buffer[MAX_SECURE_SIZE];
+    for (size_t i = 0; i < secure_len; i++) {
+        temp_buffer[i] = secure_buffer[i] ^ XOR_KEY;
+    }
+    
+    Napi::Buffer<uint8_t> buf = Napi::Buffer<uint8_t>::Copy(env, temp_buffer, secure_len);
+    std::fill(temp_buffer, temp_buffer + MAX_SECURE_SIZE, 0); // Wipe temp buffer immediately
+    
     return buf;
 }
 
@@ -271,11 +223,6 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
 
     if (!worker_running.exchange(true)) {
         SetupCrashHandlers();
-        
-        hook_thread = std::thread([]() {
-            RunMessageLoop();
-        });
-        hook_thread.detach();
         
         evdev_thread = std::thread([]() {
             RunEvdevLoop();
@@ -332,13 +279,14 @@ Napi::Value IsHardwareLocked(const Napi::CallbackInfo& info) { return Napi::Bool
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
 #ifdef __linux__
-    if (geteuid() != 0) {
-        Napi::Error::New(env, "FATAL: Monolith Kernel Level security mandates root privileges on Linux. Evdev HW Lock cannot engage!").ThrowAsJavaScriptException();
-        return exports; // Halts the app from starting properly up the chain
-    }
     if (!memory_locked) {
         mlock(secure_buffer, MAX_SECURE_SIZE);
         memory_locked = true;
+        
+        // Generate random XOR mask for this session
+        srand((unsigned int)time(NULL));
+        XOR_KEY = (uint8_t)(rand() % 255);
+        if (XOR_KEY == 0) XOR_KEY = 0xAA; // Avoid 0-mask
     }
 #endif
     exports.Set("enableSecureInput", Napi::Function::New(env, EnableProtection));

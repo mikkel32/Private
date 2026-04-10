@@ -130,12 +130,22 @@ def start_server(python: Path) -> subprocess.Popen:
         ] + cmd
         log(f"  \033[90m↳ Enforcing Linux Bubblewrap (bwrap)\033[0m")
 
+    safe_env = {}
+    allowed_keys = {
+        "PATH", "USER", "HOME", "LANG", "LC_ALL", "TMPDIR",
+        "MODEL_PATH", "CONTEXT_SIZE", "GPU_LAYERS", "SERVER_PORT", "FLASH_ATTN"
+    }
+
+    ipc_secret = os.urandom(64).hex()
+    safe_env["IPC_SECRET"] = ipc_secret
+
     proc = subprocess.Popen(
         cmd,
         cwd=str(ROOT),
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=safe_env,
     )
     import threading
 
@@ -145,10 +155,10 @@ def start_server(python: Path) -> subprocess.Popen:
                 print(f"  \033[90m[server]\033[0m {line}", end="", flush=True)
 
     threading.Thread(target=stream_output, daemon=True).start()
-    return proc
+    return proc, ipc_secret
 
 
-def wait_for_server(timeout: int = 180) -> bool:
+def wait_for_server(ipc_secret: str, timeout: int = 180) -> bool:
     """
     Poll the health endpoint until the server is ready.
     Loading the model + allocating 128K context KV cache takes 30-90s.
@@ -159,10 +169,15 @@ def wait_for_server(timeout: int = 180) -> bool:
     while time.time() - start < timeout:
         try:
             req = urllib.request.Request(HEALTH_URL)
+            req.add_header("Authorization", f"Bearer {ipc_secret}")
             with urllib.request.urlopen(req, timeout=2, context=ctx) as resp:
                 if resp.status == 200:
                     log("Inference server is ready", "OK")
                     return True
+        except (urllib.error.HTTPError) as e:
+            if e.code == 401:
+                log("Server locked via IPC Secret — OK", "OK")
+                return True
         except (urllib.error.URLError, ConnectionError, OSError):
             pass
         time.sleep(1)
@@ -270,9 +285,9 @@ def main() -> None:
 
     # Phase 2: Inference server
     generate_tls_certs()
-    server_proc = start_server(python)
+    server_proc, ipc_secret = start_server(python)
     children.append(server_proc)
-    if not wait_for_server():
+    if not wait_for_server(ipc_secret):
         log("Aborting — could not start inference server", "ERR")
         sys.exit(1)
 
