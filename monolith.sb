@@ -1,5 +1,5 @@
 (version 1)
-(allow default)
+(deny default)
 
 ; ==============================================================================
 ; PROJECT MONOLITH - macOS App Sandbox Profile (sandbox-exec)
@@ -9,21 +9,48 @@
 ; 
 ; This strict policy enforces absolute isolation on the LLM instance to ensure
 ; a hijacked RAG or Prompt-Injection attack cannot compromise the host OS.
+; It utilizes a STRICT DEFAULT-DENY model, effectively blocking all files,
+; memory mapping, IPC, and network capabilities not overtly permitted.
 ; ==============================================================================
+
+; --- CORE OS FUNCTIONALITY ---
+(allow process-exec*)
+(allow process-fork)
+(allow sysctl-read)
+(allow mach-lookup)
+(allow signal)
 
 ; --- NETWORK ISOLATION ---
 ; Deny ALL outbound network connections to prevent exfiltration and C&C callbacks.
+; (Deny default implicitly blocks this, but explicitly stated for semantic integrity)
 (deny network-outbound (remote tcp))
 (deny network-outbound (remote udp))
 (deny network-outbound (remote ip))
+
+; Explicit block of UNIX sockets to prevent mDNSResponder & syslog exfiltration
+(deny network-outbound (remote unix-socket))
+
 ; Explicitly allow localhost bindings so the UI can communicate with the inference node
-(allow network-inbound)
-(allow network-bind)
+(allow network-inbound (local ip "127.0.0.1:*"))
+(allow network-bind (local ip "127.0.0.1:*"))
 
 ; --- FILE SYSTEM ISOLATION ---
-; Deny mutating the file system arbitrarily. A hijacked prompt CANNOT delete directories
-; or modify source code files in this directory.
-(deny file-write*)
+(allow file-read-metadata) ; Needed for python to resolve stat() and dtags
+
+; Whitelisted READ access
+(allow file-read-data
+    (subpath "/System/Library")
+    (subpath "/usr/lib")
+    (subpath "/usr/share")
+    (subpath "/usr/local")
+    (subpath "/opt/homebrew")
+    (subpath "/Users/mikkelmynderup/Desktop/Privacy/.venv")
+    (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private")
+    (subpath "/Users/mikkelmynderup/Library/Caches")
+    (subpath "/private/var")
+    (subpath "/private/tmp")
+    (subpath "/dev")
+)
 
 ; Allow writing ONLY to essential transient locations required by Python & macOS Metal.
 (allow file-write* 
@@ -35,22 +62,13 @@
     (literal "/dev/urandom")
 )
 
-; --- PROCESS EXECUTION ISOLATION ---
-; Deny executing standard shells. Even if RCE is achieved, attackers cannot spawn a command shell
-(deny process-exec 
-    (literal "/bin/sh") 
-    (literal "/bin/bash") 
-    (literal "/bin/zsh") 
-    (literal "/bin/dash")
-)
-
-; --- DATA THEFT ISOLATION ---
-; Deny reading critical host locations where sensitive data is stored globally
+; --- EXPLICIT DATA THEFT ISOLATION ---
+; Even though default deny blocks this, we add explicit deny rules for the most
+; critical folders to prevent overlapping ALLOW rule exploitation
 (deny file-read-data
-    (subpath "/Users")
-    (subpath "/Volumes")
-    (subpath "/etc")
+    (subpath "/Users/mikkelmynderup/.ssh")
+    (subpath "/Users/mikkelmynderup/.gnupg")
+    (subpath "/Users/mikkelmynderup/Library/Keychains")
+    (subpath "/Users/mikkelmynderup/.aws")
 )
 
-; Explicitly allow reading from the project directory, bypassing the user block
-(allow file-read-data (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private"))

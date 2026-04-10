@@ -1,33 +1,26 @@
 (version 1)
-(allow default)
-
-; Prevent outbound network connections
-(deny network-outbound (remote tcp))
-(deny network-outbound (remote udp))
-(deny network-outbound (remote ip))
-(allow network-inbound)
-(allow network-bind)
-
-; Prevent file writes
-(deny file-write*)
+(deny default)
+(allow process*)
+(allow sysctl-read)
+(allow mach-lookup)
+(allow signal)
+(allow file-read-data
+    (subpath "/System/Library")
+    (subpath "/usr")
+    (subpath "/opt/homebrew")
+    (subpath "/Users/mikkelmynderup/Desktop/Privacy")
+    (subpath "/private/var")
+    (subpath "/private/tmp")
+    (subpath "/dev")
+)
+(allow file-read-metadata)
 (allow file-write* 
     (subpath "/private/tmp")
     (subpath "/private/var/folders")
     (subpath "/Users/mikkelmynderup/Desktop/Privacy/Private/__pycache__")
     (literal "/dev/null")
     (literal "/dev/random")
-    (literal "/dev/urandom")
 )
-
-; Prevent reverse shells by blocking execution of standard UNIX shells
-(deny process-exec (literal "/bin/sh") (literal "/bin/bash") (literal "/bin/zsh") (literal "/bin/dash"))
-
-; Prevent reading sensitive user data and SSH keys
-(deny file-read-data
-    (subpath "/Users/mikkelmynderup/.ssh")
-    (subpath "/Users/mikkelmynderup/.aws")
-    (subpath "/Users/mikkelmynderup/.gnupg")
-    (subpath "/Users/mikkelmynderup/.config")
-    (subpath "/etc/passwd")
-    (subpath "/etc/shadow")
-)
+(allow network-inbound)
+(allow network-bind)
+(deny network-outbound (remote unix-socket))
