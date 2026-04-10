@@ -54,13 +54,13 @@ Napi::ThreadSafeFunction tsfn;
 uint32_t* dext_shared_memory = nullptr;
 io_connect_t dext_connection = MACH_PORT_NULL;
 
-// Hardware keystroke extraction MUST happen in Ring 0 (secure_kernel_mac.cpp / .dext)
+// Hardware keystroke extraction MUST happen in Ring 0 (secure_kext_mac.cpp / .kext)
 void StartTapWorker() {
     kern_return_t kr;
-    io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceNameMatching("MonolithSecureHIDDriver"));
+    io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceNameMatching("MonolithSecureKEXT"));
     
     if (service == MACH_PORT_NULL) {
-        os_log_error(OS_LOG_DEFAULT, "Monolith DEXT not found. Falling back to Ghost Protocol.");
+        os_log_error(OS_LOG_DEFAULT, "Monolith KEXT not found. Falling back to Ghost Protocol.");
         hardware_grab_success.store(false);
         return;
     }
