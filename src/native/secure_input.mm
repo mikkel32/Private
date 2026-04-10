@@ -303,6 +303,19 @@ Napi::Value Backspace(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(env, true);
 }
 
+// ── Native Screen Scraping Block (AppKit exclusion) ────────────────
+Napi::Value ProtectWindow(const Napi::CallbackInfo& info) {
+    Napi::Env env = info.Env();
+    dispatch_sync(dispatch_get_main_queue(), ^{
+        for (NSWindow *window in [NSApp windows]) {
+            // macOS 10.15+ ScreenCaptureKit exclusion / CoreGraphics block
+            // Natively forces a black physical screen render for this process during OCR screen-recording
+            window.sharingType = NSWindowSharingNone;
+        }
+    });
+    return Napi::Boolean::New(env, true);
+}
+
 // Native Clipboard functions removed per Zero-Trust Protocol.
 
 Napi::Value LockProcessEnv(const Napi::CallbackInfo& info) {
@@ -359,6 +372,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "isDebuggerAttached"), Napi::Function::New(env, IsDebuggerAttached));
     exports.Set(Napi::String::New(env, "mlockallEnvironment"), Napi::Function::New(env, LockProcessEnv));
     exports.Set(Napi::String::New(env, "isHardwareLocked"), Napi::Function::New(env, IsHardwareLocked));
+    exports.Set(Napi::String::New(env, "protectWindow"), Napi::Function::New(env, ProtectWindow));
     return exports;
 }
 

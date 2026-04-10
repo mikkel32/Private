@@ -386,6 +386,12 @@ function createWindow() {
 
   // Extreme Privacy: Defeat screen scrapers and OS video recording
   win.setContentProtection(true);
+  win.on('ready-to-show', () => {
+    if (secureInput && secureInput.protectWindow) {
+      secureInput.protectWindow(); 
+      console.log("Native AppKit Window Protection Engaged");
+    }
+  });
 
   // Send Blur/Focus to React for Mission Control Scrambling
   win.on('blur', () => {
