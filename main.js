@@ -71,6 +71,13 @@ ipcMain.handle("secure-check-hardware", () => {
   return false;
 });
 
+ipcMain.handle("secure-check-debugger", () => {
+  if (secureInput && secureInput.isDebuggerAttached) {
+    return secureInput.isDebuggerAttached();
+  }
+  return false;
+});
+
 ipcMain.on("secure-enable", () => {
   if (secureInput) secureInput.enableSecureInput();
 });

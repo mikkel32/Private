@@ -12,6 +12,28 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/ptrace.h>
+#include <sys/sysctl.h>
+#include <os/log.h>
+
+// Dynamic P_TRACED verification (Anti-DTrace / Anti-LLDB)
+static bool amIBeingDebugged(void) {
+    int                 junk;
+    int                 mib[4];
+    struct kinfo_proc   info;
+    size_t              size;
+
+    info.kp_proc.p_flag = 0;
+
+    mib[0] = CTL_KERN;
+    mib[1] = KERN_PROC;
+    mib[2] = KERN_PROC_PID;
+    mib[3] = getpid();
+
+    size = sizeof(info);
+    junk = sysctl(mib, sizeof(mib) / sizeof(*mib), &info, &size, NULL, 0);
+
+    return ( (info.kp_proc.p_flag & P_TRACED) != 0 );
+}
 
 constexpr size_t MAX_SECURE_SIZE = 8192;
 char secure_buffer[MAX_SECURE_SIZE];
@@ -272,6 +294,21 @@ Napi::Value IsHardwareLocked(const Napi::CallbackInfo& info) {
     return Napi::Boolean::New(info.Env(), false);
 }
 
+// Dynamically monitors process flags for DTrace or lldb tampering
+Napi::Value IsDebuggerAttached(const Napi::CallbackInfo& info) {
+    bool traced = amIBeingDebugged();
+    if (traced) {
+        // [GHOST PROTOCOL TRIGGER] Physical Tampering Detected
+        os_log_error(OS_LOG_DEFAULT, "FATAL: Process Tracing detected! Evicting buffers and locking out physical keyboard.");
+        if (secure_len > 0) {
+            memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
+            madvise(secure_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
+            secure_len = 0;
+        }
+    }
+    return Napi::Boolean::New(info.Env(), traced);
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     if (!memory_locked) {
         mlock(secure_buffer, MAX_SECURE_SIZE);
@@ -293,6 +330,7 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "drain"), Napi::Function::New(env, DrainPayload));
     exports.Set(Napi::String::New(env, "backspace"), Napi::Function::New(env, Backspace));
     exports.Set(Napi::String::New(env, "registerCallback"), Napi::Function::New(env, RegisterCallback));
+    exports.Set(Napi::String::New(env, "isDebuggerAttached"), Napi::Function::New(env, IsDebuggerAttached));
     exports.Set(Napi::String::New(env, "mlockallEnvironment"), Napi::Function::New(env, LockProcessEnv));
     exports.Set(Napi::String::New(env, "isHardwareLocked"), Napi::Function::New(env, IsHardwareLocked));
     return exports;

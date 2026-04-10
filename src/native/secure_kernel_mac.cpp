@@ -89,11 +89,24 @@ void MonolithSecureHIDDriver::dispatchKeyboardEvent(uint64_t timeStamp, uint32_t
         //    or OS application (including Ring 0 System rootkits reading post-processing)
         //    will ever see this keycode!
         
-        // 2. Transmit the 'usage' code directly back to the XPC port connected
-        //    to secure_input.mm.
+        // 2. Transmit the 'usage' code directly back to the UserClient port
         if (this->userClient) {
-            // Pseudo-code for dropping struct payload into our custom IOCTL memory map
-            // userClient->DispatchMessage(usage);
+            // Under DriverKit, we extract our Shared Memory Descriptor mapped during Connect()
+            /*
+            IOMemoryDescriptor* shm = nullptr;
+            userClient->GetSharedMemory(0, &shm);
+            if (shm) {
+                // Atomic ring-buffer lock-free payload drop
+                IOBufferMemoryDescriptor* bmd = OSDynamicCast(IOBufferMemoryDescriptor, shm);
+                if (bmd) {
+                    uint32_t* buf = (uint32_t*)bmd->getBytesNoCopy();
+                    // Append usage & value to ring buffer
+                    uint32_t tail = buf[0];
+                    buf[2 + (tail % 1024)] = usage; // Simple ring buffer
+                    __atomic_store_n(&buf[0], tail + 1, __ATOMIC_RELEASE);
+                }
+            }
+            */
         }
         
         os_log_debug(OS_LOG_DEFAULT, "Monolith: Hardware Key Swallow.");

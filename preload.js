@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   enableSecureInput: () => ipcRenderer.send("secure-enable"),
   disableSecureInput: () => ipcRenderer.send("secure-disable"),
   isHardwareLocked: () => ipcRenderer.invoke("secure-check-hardware"),
+  isDebuggerAttached: () => ipcRenderer.invoke("secure-check-debugger"),
   initSAB: (sab) => ipcRenderer.send("secure-init-sab", sab),
   appendBuffer: (buffer) => ipcRenderer.send("secure-append", buffer),
   backspace: () => ipcRenderer.send("secure-backspace"),
