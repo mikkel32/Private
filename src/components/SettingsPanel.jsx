@@ -25,6 +25,25 @@ export default function SettingsPanel({ settings, onUpdate, onClose, serverInfo 
         </div>
 
         <div className="settings-body">
+          {/* ── Security Section ────────────────────────────────────────────── */}
+          <div className="settings-section">
+            <h3>🛡️ Security Protocol</h3>
+            <p className="settings-desc">
+              Choose your isolation level. Paranoid completely hides text memory from V8 JavaScript.
+            </p>
+            <div className="setting-row" style={{ flexDirection: 'column', alignItems: 'flex-start', padding: '10px' }}>
+              <select 
+                style={{ width: '100%', padding: '8px', background: '#222', border: '1px solid #444', color: '#fff', borderRadius: '4px', fontSize: '14px', marginTop: '8px' }}
+                value={local.securityMode || "paranoid"} 
+                onChange={(e) => update("securityMode", e.target.value)}
+              >
+                  <option value="paranoid">Paranoid (Ring-3/Ring-0 Native Lock)</option>
+                  <option value="ghost">Ghost Protocol (Virtual Keyboard)</option>
+                  <option value="standard">Standard Web Input (Allows Screen Readers)</option>
+              </select>
+            </div>
+          </div>
+
           {/* ── Reasoning Section ─────────────────────────────────────── */}
           <div className="settings-section">
             <h3>🧠 Reasoning</h3>

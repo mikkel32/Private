@@ -233,6 +233,81 @@ ipcMain.on("secure-network-dispatch", (event, configObj) => {
   }
 });
 
+// Standard Web Input Fallback (Bypasses C++ Memory Vault & Telemetry)
+ipcMain.handle("send-standard-message", (event, configObj, text) => {
+  try {
+    const secret = Buffer.from(text, "utf-8");
+    const convIdBuf = Buffer.from(configObj.conversation_id || "default", "utf-8");
+
+    const fixedAllocSize = 1 + 4 + 4 + 8 + 8 + 4 + 4;
+    const finalPayload = Buffer.alloc(fixedAllocSize + convIdBuf.length + secret.length);
+    
+    let offset = 0;
+    finalPayload.writeUInt8(configObj.enable_thinking, offset); offset += 1;
+    finalPayload.writeUInt32BE(configObj.thinking_budget, offset); offset += 4;
+    finalPayload.writeUInt32BE(configObj.max_tokens, offset); offset += 4;
+    finalPayload.writeDoubleBE(configObj.temperature, offset); offset += 8;
+    finalPayload.writeDoubleBE(configObj.top_p, offset); offset += 8;
+    
+    finalPayload.writeUInt32BE(convIdBuf.length, offset); offset += 4;
+    convIdBuf.copy(finalPayload, offset); offset += convIdBuf.length;
+    
+    finalPayload.writeUInt32BE(secret.length, offset); offset += 4;
+    secret.copy(finalPayload, offset); offset += secret.length;
+
+    const req = https.request("https://127.0.0.1:8420/v1/chat/stream_canvas", {
+      method: 'POST',
+      rejectUnauthorized: false,
+      headers: {
+          'Content-Type': 'application/octet-stream',
+          'Authorization': `Bearer ${process.env.IPC_SECRET}`
+      }
+    });
+
+    req.on('response', (res) => {
+      if (!validateFingerprint(res, req)) return event.sender.send("secure-stream-end");
+      if (res.statusCode !== 200) {
+        return event.sender.send("secure-stream-end");
+      }
+      let currentBuffer = Buffer.alloc(0);
+      
+      res.on('data', (chunk) => {
+         currentBuffer = Buffer.concat([currentBuffer, chunk]);
+         while (currentBuffer.length >= 4) {
+             const len = currentBuffer.readUInt32BE(0);
+             if (currentBuffer.length >= 4 + len) {
+                 const pngData = currentBuffer.slice(4, 4 + len);
+                 currentBuffer = currentBuffer.slice(4 + len);
+                 event.sender.send("secure-canvas-frame", pngData);
+             } else {
+                 break;
+             }
+         }
+      });
+      res.on('end', () => event.sender.send("secure-stream-end"));
+      res.on('error', (err) => {
+         console.error("Stream Error", err);
+         event.sender.send("secure-stream-end");
+      });
+    });
+
+    req.on('error', (err) => {
+      console.error("Network Error", err);
+      event.sender.send("secure-stream-end");
+    });
+
+    req.on('finish', () => {
+      finalPayload.fill(0);
+      secret.fill(0);
+      convIdBuf.fill(0);
+    });
+    
+    req.end(finalPayload);
+  } catch (err) {
+    console.error("Standard MSG error:", err);
+  }
+});
+
 ipcMain.handle("check-server-health", () => {
   return new Promise((resolve) => {
     const req = https.request("https://127.0.0.1:8420/health", {

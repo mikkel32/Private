@@ -183,7 +183,13 @@ def wait_for_server(ipc_secret: str, timeout: int = 180) -> bool:
             if e.code == 401:
                 log("Server locked via IPC Secret — OK", "OK")
                 return True
-        except (urllib.error.URLError, ConnectionError, OSError):
+        except (urllib.error.URLError, ConnectionError, OSError) as _exc:
+            with open("debug.log", "a") as f:
+                f.write(f"URLError: {_exc}\\n")
+            pass
+        except Exception as _exc2:
+            with open("debug.log", "a") as f:
+                f.write(f"Exception: {_exc2}\\n")
             pass
         time.sleep(1)
 
@@ -254,14 +260,19 @@ def sign_electron() -> None:
         log("Enforcing App Sandbox Entitlements on Electron binary…", "RUN")
         subprocess.run(["codesign", "--sign", "-", "--entitlements", str(entitlements), "--force", "--deep", str(electron_app)], capture_output=True)
 
-def start_electron() -> subprocess.Popen:
+def start_electron(ipc_secret: str) -> subprocess.Popen:
     log("Launching Electron app…")
     sign_electron()
+    
+    env = os.environ.copy()
+    env["IPC_SECRET"] = ipc_secret
+    
     return subprocess.Popen(
         ["npx", "electron", "."],
         cwd=str(ROOT),
         stdout=None,
         stderr=None,
+        env=env
     )
 
 
@@ -313,7 +324,7 @@ def main() -> None:
         log("Aborting — Vite dev server failed", "ERR")
         sys.exit(1)
 
-    electron_proc = start_electron()
+    electron_proc = start_electron(ipc_secret)
     children.append(electron_proc)
 
     print()

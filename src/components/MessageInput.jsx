@@ -12,7 +12,10 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
   // The characters themselves are physically residing inside the macOS C++ compilation.
   // The frontend only tracks how many dots to render. V8 never aggregates the Strings.
   const [vaultLength, setVaultLength] = useState(0);
-  const [ghostMode, setGhostMode] = useState(false);
+  const [standardText, setStandardText] = useState("");
+  const isStandard = settings?.securityMode === "standard";
+  const isGhost = settings?.securityMode === "ghost";
+  const [ghostMode, setGhostMode] = useState(isGhost);
   const [hardwareLockWarning, setHardwareLockWarning] = useState(false);
 
   useEffect(() => {
@@ -22,7 +25,7 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
         const isDebugged = await window.electronAPI.isDebuggerAttached();
         if (!isLocked || isDebugged) {
           setHardwareLockWarning(true);
-          setGhostMode(true); // Force Ghost Protocol automatically
+          // Do NOT force Ghost Protocol - fallback to Ring 3 Event Tap is engaged
         }
       }
     }
@@ -37,10 +40,18 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
     resize();
   }, [vaultLength, resize]);
 
+  useEffect(() => {
+    setGhostMode(isGhost);
+  }, [isGhost]);
+
   const wipeMemory = useCallback(() => {
-    window.electronAPI.wipeVault();
-    setVaultLength(0);
-  }, []);
+    if (isStandard) {
+        setStandardText("");
+    } else {
+        window.electronAPI.wipeVault();
+        setVaultLength(0);
+    }
+  }, [isStandard]);
 
   useEffect(() => {
     if (!window.electronAPI) return;
@@ -67,40 +78,53 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
     return () => window.electronAPI.offSecureKeyTick();
   }, [ghostMode, isStreaming, disabled, onSend]);
 
-  const handleKeyDown = useCallback(
-    (e) => {
-      // Absolut C++ Ghost Mode! Sørger for Blink/V8 Strings ikke oprettes via native browser event
+  const handleKeyDown = useCallback((e) => {
+      if (isStandard) {
+          if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              if (standardText.trim() && !disabled && !isStreaming) {
+                  onSend(standardText);
+                  setStandardText("");
+              }
+          }
+          return;
+      }
+      
       e.preventDefault();
       e.stopPropagation();
-    },
-    []
-  );
+  }, [isStandard, standardText, disabled, isStreaming, onSend]);
   const handleFocus = useCallback(() => {
-    window.electronAPI.enableSecureInput();
-  }, []);
+    if (!isStandard) window.electronAPI.enableSecureInput();
+  }, [isStandard]);
 
   const handleBlur = useCallback(() => {
-    window.electronAPI.disableSecureInput();
-  }, []);
+    if (!isStandard) window.electronAPI.disableSecureInput();
+  }, [isStandard]);
 
   const handleSendClick = useCallback(async () => {
     if (isStreaming) {
       onStop();
     } else {
-      if (vaultLength > 0 && !disabled) {
-          onSend("");
+      if (isStandard) {
+          if (standardText.trim() && !disabled) {
+              onSend(standardText);
+              setStandardText("");
+          }
+      } else {
+          if (vaultLength > 0 && !disabled) {
+              onSend("");
+          }
       }
     }
-  }, [isStreaming, disabled, onSend, onStop, vaultLength]);
+  }, [isStreaming, disabled, onSend, onStop, vaultLength, isStandard, standardText]);
 
   const previewText = "●".repeat(vaultLength);
 
   return (
     <>
-      {hardwareLockWarning && (
-        <div style={{ backgroundColor: '#ff3b30', color: 'white', padding: '10px', textAlign: 'center', fontSize: '12px', fontWeight: 'bold', borderRadius: '8px', marginBottom: '8px', zIndex: 100 }}>
-          ⚠️ CRITICAL: HARDWARE-LEVEL VULNERABILITY DETECTED. PHYSICAL KEYBOARD HOOK REJECTED / INSECURE.<br/>
-          Ghost Protocol (OSK) has been forcibly enabled to prevent user-space Rootkits from intercepting keystrokes.
+      {hardwareLockWarning && !isStandard && !isGhost && (
+        <div style={{ backgroundColor: '#ff9800', color: '#000', padding: '6px', textAlign: 'center', fontSize: '11px', fontWeight: 'bold', borderRadius: '6px', marginBottom: '8px', zIndex: 100 }}>
+          ⚠️ Ring 3 User-Space Lock Active (DEXT Offline). Physical Keyboard protected via AppKit.
         </div>
       )}
       <div className="input-area" style={{ position: 'relative' }}>
@@ -121,12 +145,14 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
       <div className="input-container">
         <div className="input-wrapper">
           <div className="secure-input-wrapper" style={{ position: 'relative', flex: 1, minHeight: '44px' }}>
-            {/* Absolute Isolation Ghost Wrapper bypassing DOM String allocation */}
+            {/* Extracted Input */}
             <input
               ref={inputRef}
               type="text"
-              title="OS-Level Keylogger Protection Active"
-              defaultValue=""
+              title={isStandard ? "Standard Web Input" : "OS-Level Keylogger Protection Active"}
+              value={isStandard ? standardText : ""}
+              defaultValue={isStandard ? undefined : ""}
+              onChange={(e) => { if (isStandard) setStandardText(e.target.value); }}
               onKeyDown={handleKeyDown}
               onFocus={handleFocus}
               onBlur={handleBlur}
@@ -135,72 +161,81 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
               autoComplete="off"
               autoCorrect="off"
               spellCheck="false"
-              onPaste={(e) => e.preventDefault()}
-              onDrop={(e) => e.preventDefault()}
-              onContextMenu={(e) => e.preventDefault()}
+              onPaste={(e) => !isStandard && e.preventDefault()}
+              onDrop={(e) => !isStandard && e.preventDefault()}
+              onContextMenu={(e) => !isStandard && e.preventDefault()}
               style={{
                 width: '100%',
                 height: '100%',
                 position: 'absolute',
                 top: 0,
                 left: 0,
-                color: 'transparent',    // Hide text instantly
+                color: isStandard ? '#eee' : 'transparent',
                 background: 'transparent',
-                caretColor: '#888',      // Keep cursor visible
+                caretColor: '#888',
                 border: 'none',
                 outline: 'none',
                 resize: 'none',
                 fontFamily: 'inherit',
                 fontSize: '15px',
                 padding: '12px',
-                zIndex: 2,               // Receive all clicks and focus
+                zIndex: 2,
               }}
             />
+            
             {/* Visual Proxy */}
-            <div 
-              style={{
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                width: '100%',
-                height: '100%',
-                padding: '12px',
-                pointerEvents: 'none',
-                fontFamily: 'inherit',
-                fontSize: '15px',
-                color: vaultLength > 0 ? '#eee' : '#555',
-                zIndex: 1,
-                whiteSpace: 'nowrap',
-                overflow: 'hidden'
-              }}
-            >
-              {previewText ? previewText : (disabled ? "Waiting for server…" : (ghostMode ? "Ghost Protocol Active..."  : "Secure isolated input…"))}
-            </div>
+            {!isStandard && (
+                <div 
+                  style={{
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    width: '100%',
+                    height: '100%',
+                    padding: '12px',
+                    pointerEvents: 'none',
+                    fontFamily: 'inherit',
+                    fontSize: '15px',
+                    color: vaultLength > 0 ? '#eee' : '#555',
+                    zIndex: 1,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden'
+                  }}
+                >
+                  {previewText ? previewText : (disabled ? "Waiting for server…" : (ghostMode ? "Ghost Protocol Active..." : "Secure isolated input…"))}
+                </div>
+            )}
             
             {/* Kernel Warning Dropdown */}
-            {!ghostMode && (
+            {!ghostMode && !isStandard && (
                 <div style={{ position: 'absolute', top: '100%', left: 0, width: '100%', background: '#301010', color: '#ff6b6b', fontSize: '11px', padding: '4px 8px', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px', border: '1px solid #ff444455', borderTop: 'none', zIndex: -1, pointerEvents: 'none' }}>
                     ⚠️ <b>PHYSICAL KEYBOARD ACTIVE:</b> Vulnerable to Kernel & Hardware level Keyloggers. Use Ghost Protocol (👻) for maximum isolation.
                 </div>
             )}
+            {isStandard && (
+                <div style={{ position: 'absolute', top: '100%', left: 0, width: '100%', background: '#222', color: '#aaa', fontSize: '11px', padding: '4px 8px', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px', border: '1px solid #444', borderTop: 'none', zIndex: -1, pointerEvents: 'none' }}>
+                    🌐 <b>STANDARD INPUT ACTIVE:</b> Screen Readers and Plugins are enabled. Visual OCR Anti-Scraper memory vault is bypassed.
+                </div>
+            )}
           </div>
-          <button
-              onClick={() => !hardwareLockWarning && setGhostMode(m => !m)}
-              title={hardwareLockWarning ? "Ghost Protocol Forced (Hardware Compromised)" : "Toggle Ghost Protocol (OSK)"}
-              disabled={hardwareLockWarning}
-              style={{
-                  background: ghostMode ? (hardwareLockWarning ? '#ff9800' : '#4caf50') : 'transparent',
-                  border: '1px solid #444',
-                  color: ghostMode ? '#000' : '#888',
-                  padding: '0 12px',
-                  borderRadius: '4px',
-                  cursor: hardwareLockWarning ? 'not-allowed' : 'pointer',
-                  opacity: hardwareLockWarning ? 0.8 : 1,
-                  marginRight: '8px'
-              }}
-          >
-              👻
-          </button>
+          {!isStandard && (
+              <button
+                  onClick={() => setGhostMode(m => !m)}
+                  title={"Toggle Ghost Protocol (OSK) " + (hardwareLockWarning ? "- Hardware Lock Missing" : "")}
+                  disabled={false}
+                  style={{
+                      background: ghostMode ? '#4caf50' : 'transparent',
+                      border: '1px solid #444',
+                      color: ghostMode ? '#000' : '#888',
+                      padding: '0 12px',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      marginRight: '8px'
+                  }}
+              >
+                  👻
+              </button>
+          )}
           <button
             className="send-btn"
             onClick={handleSendClick}

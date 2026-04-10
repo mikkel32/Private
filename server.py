@@ -564,7 +564,7 @@ if __name__ == "__main__":
         app, 
         host="127.0.0.1", 
         port=PORT, 
-        log_level="critical",
+        log_level="info",
         ssl_keyfile="key.pem",
         ssl_certfile="cert.pem"
     )

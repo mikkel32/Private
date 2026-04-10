@@ -54,14 +54,58 @@ Napi::ThreadSafeFunction tsfn;
 uint32_t* dext_shared_memory = nullptr;
 io_connect_t dext_connection = MACH_PORT_NULL;
 
-// Hardware keystroke extraction MUST happen in Ring 0 (secure_kext_mac.cpp / .kext)
+CGEventRef FallbackCGEventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
+    if (type == kCGEventKeyDown && tap_active.load()) {
+        CGKeyCode keycode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+        int64_t action = 0;
+        
+        if (keycode == 51) { // Backspace
+            if (secure_len > 0) {
+                char& last = secure_buffer[secure_len - 1];
+                memset_s(&last, 1, 0, 1);
+                secure_len--;
+                action = 2;
+            }
+        } else if (keycode == 36 || keycode == 76) { // Enter / Return
+            action = 3;
+        } else {
+            UniChar chars[4];
+            UniCharCount actualStringLength = 0;
+            CGEventKeyboardGetUnicodeString(event, 4, &actualStringLength, chars);
+            if (actualStringLength > 0 && secure_len < MAX_SECURE_SIZE) {
+                char ch = (char)chars[0];
+                secure_buffer[secure_len++] = ch ^ XOR_KEY;
+                action = 1;
+            }
+        }
+        
+        last_interaction_time.store(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+        if (action > 0 && tsfn) {
+            tsfn.BlockingCall(reinterpret_cast<void*>(action), [](Napi::Env env, Napi::Function jsCallback, void* value) {
+                jsCallback.Call({ Napi::Number::New(env, reinterpret_cast<int64_t>(value)) });
+            });
+        }
+    }
+    return event;
+}
+
 void StartTapWorker() {
     kern_return_t kr;
-    io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceNameMatching("MonolithSecureKEXT"));
+    io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceNameMatching("MonolithSecureHIDDriver"));
     
     if (service == MACH_PORT_NULL) {
-        os_log_error(OS_LOG_DEFAULT, "Monolith KEXT not found. Falling back to Ghost Protocol.");
+        os_log_error(OS_LOG_DEFAULT, "Monolith DEXT not found. Falling back to Ring 3 CGEventTap.");
         hardware_grab_success.store(false);
+        
+        CFMachPortRef eventTap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly, CGEventMaskBit(kCGEventKeyDown), FallbackCGEventCallback, NULL);
+        if (!eventTap) {
+            os_log_error(OS_LOG_DEFAULT, "Failed to create CGEventTap.");
+            return;
+        }
+        CFRunLoopSourceRef runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopCommonModes);
+        CGEventTapEnable(eventTap, true);
+        CFRunLoopRun();
         return;
     }
 
@@ -69,8 +113,15 @@ void StartTapWorker() {
     IOObjectRelease(service);
     
     if (kr != kIOReturnSuccess) {
-        os_log_error(OS_LOG_DEFAULT, "Failed to open IOService connection to DEXT. Ghost Protocol engaged.");
+        os_log_error(OS_LOG_DEFAULT, "Failed to open IOService connection to DEXT. Falling back to Ring 3 CGEventTap.");
         hardware_grab_success.store(false);
+        CFMachPortRef eventTap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly, CGEventMaskBit(kCGEventKeyDown), FallbackCGEventCallback, NULL);
+        if (eventTap) {
+            CFRunLoopSourceRef runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
+            CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopCommonModes);
+            CGEventTapEnable(eventTap, true);
+            CFRunLoopRun();
+        }
         return;
     }
 
@@ -79,7 +130,7 @@ void StartTapWorker() {
     kr = IOConnectMapMemory64(dext_connection, 0, mach_task_self(), &address, &size, kIOMapAnywhere);
     
     if (kr != kIOReturnSuccess || size < 1024) {
-        os_log_error(OS_LOG_DEFAULT, "M-Failed to map DEXT memory. Ghost Protocol engaged.");
+        os_log_error(OS_LOG_DEFAULT, "Failed to map DEXT memory.");
         IOServiceClose(dext_connection);
         hardware_grab_success.store(false);
         return;
@@ -207,6 +258,7 @@ Napi::Value RegisterCallback(const Napi::CallbackInfo& info) {
     if (!worker.joinable()) {
         SetupCrashHandlers();
         worker = std::thread(StartTapWorker);
+        worker.detach();
         priority_thread = std::thread(EnforcePriorityLoop);
         priority_thread.detach();
         std::thread dma_sweeper = std::thread(DMASweeperLoop);
@@ -307,13 +359,16 @@ Napi::Value Backspace(const Napi::CallbackInfo& info) {
 // ── Native Screen Scraping Block (AppKit exclusion) ────────────────
 Napi::Value ProtectWindow(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
-    dispatch_sync(dispatch_get_main_queue(), ^{
+    void (^protectBlock)(void) = ^{
         for (NSWindow *window in [NSApp windows]) {
-            // macOS 10.15+ ScreenCaptureKit exclusion / CoreGraphics block
-            // Natively forces a black physical screen render for this process during OCR screen-recording
             window.sharingType = NSWindowSharingNone;
         }
-    });
+    };
+    if ([NSThread isMainThread]) {
+        protectBlock();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), protectBlock);
+    }
     return Napi::Boolean::New(env, true);
 }
 

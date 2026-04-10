@@ -21,6 +21,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   appendBuffer: (buffer) => ipcRenderer.send("secure-append", buffer),
   backspace: () => ipcRenderer.send("secure-backspace"),
   wipeVault: () => ipcRenderer.send("secure-wipe"),
+  sendStandardMessage: (configObj, text) => ipcRenderer.invoke("send-standard-message", configObj, text),
+  stopGeneration: () => ipcRenderer.invoke("stop-generation"),
   drainVault: () => ipcRenderer.invoke("secure-drain"),
   // Protocol Omega: Network Dispatch
   secureNetworkDispatch: (configObj) => ipcRenderer.send("secure-network-dispatch", configObj),

@@ -1,6 +1,5 @@
 (version 1)
 (deny default)
-(import "system.sb") ; Provides dyld shared cache access and base OS structures
 
 ; ==============================================================================
 ; PROJECT MONOLITH - macOS App Sandbox Profile (sandbox-exec)
@@ -18,8 +17,6 @@
 (allow process-exec*)
 (allow process-fork)
 (allow sysctl-read)
-(allow mach-lookup) ; Apple Silicon CoreFoundation/Metal requires extensive IPC to function
-(allow iokit-open) ; Metal requires IOKit user-client connections for GPU VRAM allocation
 (allow signal)
 
 ; --- NETWORK ISOLATION ---
@@ -33,8 +30,6 @@
 (deny network-outbound (remote unix-socket))
 
 ; Explicitly allow localhost bindings so the UI can communicate with the inference node
-(allow network-inbound)
-(allow network-bind)
 
 ; --- FILE SYSTEM ISOLATION ---
 (allow file-read-metadata) ; Needed for python to resolve stat() and dtags
@@ -45,10 +40,13 @@
     (subpath "/System/Library/PrivateFrameworks")
     (subpath "/usr/lib")
     (subpath "/usr/share/zoneinfo")
-    (subpath "/opt/homebrew/opt")
-    (subpath "/opt/homebrew/Cellar")
+    (subpath "/opt/homebrew/opt/python@3.13")
+    (subpath "/opt/homebrew/Cellar/python@3.13")
     (subpath (param "VENV_DIR"))
-    (subpath (param "PROJECT_DIR"))
+    (literal (string-append (param "PROJECT_DIR") "/server.py"))
+    (literal (string-append (param "PROJECT_DIR") "/image_renderer.py"))
+    (literal (string-append (param "PROJECT_DIR") "/secure_memory.py"))
+    (literal (string-append (param "PROJECT_DIR") "/sep_crypto"))
     (literal (string-append (param "PROJECT_DIR") "/gemma-4-E4B-it-heretic-Q5_K_M.gguf"))
     (subpath (string-append (param "PROJECT_DIR") "/node_modules/llama-cpp-python"))
     (subpath "/Users/mikkelmynderup/Library/Caches")

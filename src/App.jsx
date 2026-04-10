@@ -44,11 +44,12 @@ export default function App() {
 
   // ── Settings (persisted in state, could be localStorage later) ─────────
   const [settings, setSettings] = useState({
+    securityMode: "paranoid",
     enableThinking: true,
     thinkingBudget: 8192,
     maxTokens: 8192,
     temperature: 0.6,
-    topP: 0.95,
+    topP: 0.9,
   });
 
   // ── Health check ───────────────────────────────────────────────────────
@@ -129,15 +130,20 @@ export default function App() {
         window.electronAPI.offStreamEvents();
 
         window.electronAPI.onStreamEnd(() => {
-           window.electronAPI.wipeVault();
+           if (settings.securityMode !== "standard") {
+               window.electronAPI.wipeVault();
+           }
            setIsStreaming(false);
            abortRef.current = null;
            checkHealth();
            window.electronAPI.offStreamEvents();
         });
 
-        window.electronAPI.secureNetworkDispatch(configObj);
-
+        if (settings.securityMode === "standard" && text) {
+            window.electronAPI.sendStandardMessage(configObj, text);
+        } else {
+            window.electronAPI.secureNetworkDispatch(configObj);
+        }
       } catch (err) {
         setIsStreaming(false);
         abortRef.current = null;
