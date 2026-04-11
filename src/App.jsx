@@ -205,7 +205,7 @@ export default function App() {
         serverInfo={serverInfo}
         onOpenSettings={() => setShowSettings(true)}
         onPurgeData={purgeAllData}
-        onExport={() => window.electronAPI.exportVault(activeId)}
+        onExport={() => window.electronAPI.exportVault(activeId, settings.securityMode)}
       />
       <div className="chat-main">
         <StatsBar

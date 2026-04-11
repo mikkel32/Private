@@ -437,16 +437,16 @@ async def export_vault(conversation_id: str):
         return JSONResponse(status_code=500, content={"error": "Export encryption failed"})
 
 @app.get("/v1/chat/export/key/{conversation_id}", dependencies=[Depends(verify_ipc_token)])
-async def export_vault_key(conversation_id: str):
+async def export_vault_key(conversation_id: str, ocr_shield: str = "on"):
     key_ba = export_keys.pop(conversation_id, None)
     if not key_ba:
-         png_bytes = render_chat_history([], "[SECURITY WARNING]\nDecryption Key destroyed or never existed.")
+         png_bytes = render_chat_history([], "[SECURITY WARNING]\nDecryption Key destroyed or never existed.", ocr_disruption=(ocr_shield != "off"))
     else:
          # Transiently convert to hex for rendering, then immediately wipe the source bytearray
          key_hex = key_ba.hex()
          ctypes.memset(ctypes.addressof((ctypes.c_char * len(key_ba)).from_buffer(key_ba)), 0, len(key_ba))
          content = f"VAULT EXPORT SUCCESSFUL\n\nAES-256-GCM DECRYPTION KEY:\n{key_hex}\n\nWarning: This key has been purged from Memory. If you close this window, the file is permanently unreadable."
-         png_bytes = render_chat_history([], content)
+         png_bytes = render_chat_history([], content, ocr_disruption=(ocr_shield != "off"))
          del key_hex  # Remove transient str reference for faster GC
          
     # We do NOT return a length prefix here since we expect a raw image/png response for an <img> tag or buffer

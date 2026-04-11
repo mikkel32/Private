@@ -30,7 +30,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   sendStandardMessage: (configObj, text) => ipcRenderer.invoke("send-standard-message", configObj, text),
   fetchHistory: (id, mode) => ipcRenderer.send("fetch-history", id, mode),
   checkServerHealth: () => ipcRenderer.invoke("check-server-health"),
-  exportVault: (id) => ipcRenderer.send("export-vault", id),
+  exportVault: (id, mode) => ipcRenderer.send("export-vault", id, mode),
   onVaultExportKey: (callback) => ipcRenderer.on("vault-export-key", (_, buffer) => callback(buffer)),
   offVaultExportKey: () => ipcRenderer.removeAllListeners("vault-export-key"),
   

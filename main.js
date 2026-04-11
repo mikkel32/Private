@@ -486,7 +486,7 @@ ipcMain.on("secure-layer-visibility", (event, visible) => {
     }
 });
 
-ipcMain.on("export-vault", (event, id) => {
+ipcMain.on("export-vault", (event, id, mode) => {
   const os = require('os');
   const targetEncPath = path.join(os.homedir(), 'Desktop', `Monolith_Vault_${id.substring(0, 8)}.enc`);
   
@@ -507,7 +507,8 @@ ipcMain.on("export-vault", (event, id) => {
        fileStream.end();
        
        // The file is secure. Now securely request the PNG raster of the password.
-       const reqKey = https.request(`https://127.0.0.1:8420/v1/chat/export/key/${id}`, {
+       const shieldParam = mode === "standard" ? "?ocr_shield=off" : "";
+       const reqKey = https.request(`https://127.0.0.1:8420/v1/chat/export/key/${id}${shieldParam}`, {
          method: 'GET',
          agent: secureAgent,
          headers: makeSEPHeaders(Buffer.from(`/v1/chat/export/key/${id}`))
