@@ -396,6 +396,12 @@ def main() -> None:
     python = ensure_venv()
     generate_tls_certs()
     
+    swift_bin = ROOT / "sep_crypto"
+    swift_source = ROOT / "sep_crypto.swift"
+    if not swift_bin.exists() and swift_source.exists():
+        log("Native Crypto Binary not found. Compiling sep_crypto…")
+        run(["swiftc", "-O", "-o", str(swift_bin), str(swift_source)])
+    
     # Phase 2: Concurrent Dependency Bootstrapping
     import threading
     t1 = threading.Thread(target=install_python_deps, args=(python,))

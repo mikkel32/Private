@@ -129,15 +129,16 @@ try {
   console.error("Missing cert_fingerprint.txt! Local MITM protection inactive.");
 }
 
-function validateFingerprint(res, req) {
-  const cert = res.socket.getPeerCertificate();
-  if (!cert || cert.fingerprint256 !== rawFingerprint) {
-    console.error(`FATAL MITM INTERCEPT: Fingerprint mismatch! Expected ${rawFingerprint}, got ${cert ? cert.fingerprint256 : 'none'}`);
-    req.destroy();
-    return false;
+const secureAgent = new https.Agent({
+  rejectUnauthorized: false, // Disables standard root CA checks
+  checkServerIdentity: (host, cert) => { // But enforces strict byte-for-byte thumbprint pinning
+    if (!cert || cert.fingerprint256 !== rawFingerprint) {
+      console.error(`FATAL MITM INTERCEPT: Fingerprint mismatch! Expected ${rawFingerprint}, got ${cert ? cert.fingerprint256 : 'none'}`);
+      return new Error('Invalid Server Certificate Fingerprint'); // Reject TLS Handshake BEFORE sending payload
+    }
+    return undefined; // Valid!
   }
-  return true;
-}
+});
 
 // Deprecated Chromium net.request callback
 
@@ -257,12 +258,11 @@ ipcMain.on("secure-network-dispatch", (event, configObj) => {
 
     const req = https.request("https://127.0.0.1:8420/v1/chat/stream_canvas", {
       method: 'POST',
-      rejectUnauthorized: false,
+      agent: secureAgent,
       headers: makeSEPHeaders(finalPayload)
     });
     
     req.on('response', (res) => {
-      if (!validateFingerprint(res, req)) return event.sender.send("secure-stream-end");
       if (res.statusCode !== 200) {
         return event.sender.send("secure-stream-end");
       }
@@ -343,12 +343,11 @@ ipcMain.handle("send-standard-message", (event, configObj, text) => {
 
     const req = https.request("https://127.0.0.1:8420/v1/chat/stream_canvas?ocr_shield=off", {
       method: 'POST',
-      rejectUnauthorized: false,
+      agent: secureAgent,
       headers: makeSEPHeaders(finalPayload)
     });
 
     req.on('response', (res) => {
-      if (!validateFingerprint(res, req)) return event.sender.send("secure-stream-end");
       if (res.statusCode !== 200) {
         return event.sender.send("secure-stream-end");
       }
@@ -404,11 +403,10 @@ ipcMain.handle("check-server-health", () => {
   return new Promise((resolve) => {
     const req = https.request("https://127.0.0.1:8420/health", {
       method: "GET",
-      rejectUnauthorized: false,
+      agent: secureAgent,
       timeout: 2000,
       headers: makeSEPHeaders(Buffer.from('/health'))
     }, (res) => {
-      if (!validateFingerprint(res, req)) return resolve({ ok: false });
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
@@ -434,12 +432,11 @@ ipcMain.on("fetch-history", (event, id, mode) => {
   const targetUrl = `https://127.0.0.1:8420/v1/chat/render/${id}${shieldParam}`;
   const req = https.request(targetUrl, {
     method: 'GET',
-    rejectUnauthorized: false,
+    agent: secureAgent,
     headers: makeSEPHeaders(Buffer.from(`/v1/chat/render/${id}`))
   });
   
   req.on('response', (res) => {
-    if (!validateFingerprint(res, req)) return;
     if (res.statusCode !== 200) {
       return;
     }
@@ -495,12 +492,11 @@ ipcMain.on("export-vault", (event, id) => {
   
   const req = https.request(`https://127.0.0.1:8420/v1/chat/export/${id}`, {
     method: 'GET',
-    rejectUnauthorized: false,
+    agent: secureAgent,
     headers: makeSEPHeaders(Buffer.from(`/v1/chat/export/${id}`))
   });
   
   req.on('response', (res) => {
-    if (!validateFingerprint(res, req)) return;
     if (res.statusCode !== 200) {
       console.error("Export Vault error:", res.statusCode);
       return;
@@ -513,12 +509,11 @@ ipcMain.on("export-vault", (event, id) => {
        // The file is secure. Now securely request the PNG raster of the password.
        const reqKey = https.request(`https://127.0.0.1:8420/v1/chat/export/key/${id}`, {
          method: 'GET',
-         rejectUnauthorized: false,
+         agent: secureAgent,
          headers: makeSEPHeaders(Buffer.from(`/v1/chat/export/key/${id}`))
        });
        
        reqKey.on('response', (kRes) => {
-           if (!validateFingerprint(kRes, reqKey)) return;
            let pngBuffer = Buffer.alloc(0);
            kRes.on('data', chunk => {
                pngBuffer = Buffer.concat([pngBuffer, chunk]);
