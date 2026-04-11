@@ -10,8 +10,8 @@
       ],
       "cflags!": [ "-fno-exceptions" ],
       "cflags_cc!": [ "-fno-exceptions" ],
-      "cflags": [ "-s", "-O3", "-fvisibility=hidden" ],
-      "cflags_cc": [ "-s", "-O3", "-fvisibility=hidden" ],
+      "cflags": [ "-s", "-O3", "-fvisibility=hidden", "-fstack-protector-strong", "-D_FORTIFY_SOURCE=2" ],
+      "cflags_cc": [ "-s", "-O3", "-fvisibility=hidden", "-fstack-protector-strong", "-D_FORTIFY_SOURCE=2" ],
       "ldflags": [ "-Wl,-s" ],
       "conditions": [
         ["OS=='mac'", {

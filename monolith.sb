@@ -22,7 +22,21 @@
 )
 (allow process-fork)
 (allow sysctl-read)
-(allow mach-lookup) ; Apple Silicon CoreFoundation/Metal requires extensive IPC to function
+; Metal & CoreFoundation require specific Mach services. Enumerated instead of wildcard.
+(allow mach-lookup
+    (global-name "com.apple.CoreServices.coreservicesd")
+    (global-name "com.apple.system.opendirectoryd.libinfo")
+    (global-name "com.apple.system.notification_center")
+    (global-name "com.apple.lsd.mapdb")
+    (global-name "com.apple.gpumemd.source")
+    (global-name "com.apple.fonts")
+    (global-name "com.apple.trustd")
+    (global-name "com.apple.cfprefsd.daemon")
+    (global-name "com.apple.cfprefsd.agent")
+    (global-name-regex #"^com\\.apple\\.metal")
+    (global-name-regex #"^com\\.apple\\.iogpu")
+    (global-name-regex #"^com\\.apple\\.AGX")
+)
 
 ; --- EXPLICIT EXFILTRATION C&C NULLIFICATIONS ---
 ; Explictly destroy pathways attempting to escape sandbox constraints or spy generically.
@@ -35,7 +49,17 @@
 (deny mach-lookup (global-name "com.apple.awdd"))
 (deny mach-lookup (global-name "com.apple.CoreLocation.agent"))
 
-(allow iokit-open) ; Metal requires IOKit user-client connections for GPU VRAM allocation
+; P8-5 REMEDIATION: Scope iokit-open to Metal/GPU drivers ONLY.
+; The blanket (allow iokit-open) let the LLM connect to ANY IOKit driver.
+(allow iokit-open
+    (iokit-user-client-class "AGXDeviceUserClient")
+    (iokit-user-client-class "IOGPUDeviceUserClient")
+    (iokit-user-client-class "AppleANEUserClient")
+    (iokit-user-client-class "IOSurfaceRootUserClient")
+    (iokit-user-client-class "IGAccelDevice")
+    (iokit-user-client-class "IGAccelSharedUserClient")
+    (iokit-user-client-class "IGAccelCommandQueue")
+)
 (allow signal)
 
 ; --- NETWORK ISOLATION ---
@@ -67,7 +91,8 @@
     (subpath (param "PROJECT_DIR"))
     (literal (string-append (param "PROJECT_DIR") "/gemma-4-E4B-it-heretic-Q5_K_M.gguf"))
     (subpath (string-append (param "PROJECT_DIR") "/node_modules/llama-cpp-python"))
-    (subpath "/Users/mikkelmynderup/Library/Caches")
+    ; P21-7 REMEDIATION: Use HOME_DIR param instead of hardcoded username.
+    (subpath (string-append (param "HOME_DIR") "/Library/Caches"))
     (subpath "/private/var/folders")
     (subpath "/private/tmp")
     (literal "/dev/urandom")
@@ -88,10 +113,11 @@
 ; --- EXPLICIT DATA THEFT ISOLATION ---
 ; Even though default deny blocks this, we add explicit deny rules for the most
 ; critical folders to prevent overlapping ALLOW rule exploitation
+; P21-7 REMEDIATION: Use HOME_DIR param for all user-specific paths.
 (deny file-read-data
-    (subpath "/Users/mikkelmynderup/.ssh")
-    (subpath "/Users/mikkelmynderup/.gnupg")
-    (subpath "/Users/mikkelmynderup/Library/Keychains")
-    (subpath "/Users/mikkelmynderup/.aws")
+    (subpath (string-append (param "HOME_DIR") "/.ssh"))
+    (subpath (string-append (param "HOME_DIR") "/.gnupg"))
+    (subpath (string-append (param "HOME_DIR") "/Library/Keychains"))
+    (subpath (string-append (param "HOME_DIR") "/.aws"))
 )
 

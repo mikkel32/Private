@@ -15,8 +15,11 @@
 #include "bsp/board.h"
 #include "tusb.h"
 
-// The Monolith Secret Hardware Key (Must align with Backend Node.js parser)
-const uint8_t MONOLITH_XOR_KEY = 0x8F; 
+// P23-19 SECURITY WARNING: This key is a DEVELOPMENT PLACEHOLDER.
+// In production, the key MUST be provisioned via ECDH key exchange during USB pairing.
+// The host reads USB_AES_KEY from environment. NEVER commit the production key.
+// TODO: Implement secure pairing protocol (ECDH over HID endpoint 2).
+const uint8_t MONOLITH_XOR_KEY = 0x8F; // DEVELOPMENT ONLY — NOT FOR PRODUCTION
 
 // Custom HID Report Descriptor (Not a keyboard, just a raw data pipe)
 uint8_t const desc_hid_report[] = {

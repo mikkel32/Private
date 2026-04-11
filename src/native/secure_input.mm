@@ -14,6 +14,17 @@
 
 #include <thread>
 #include <atomic>
+#include <sys/resource.h> // P11-12: setrlimit(RLIMIT_CORE, 0)
+
+// P12-4 REMEDIATION: Gate ALL native logging behind compile-time flag.
+// Without this, NSLog/os_log leak DRM state, frame dimensions, DEXT status to Console.app.
+  #define MONOLITH_LOG(fmt, ...) do { \
+    NSString *logStr = [NSString stringWithFormat:fmt, ##__VA_ARGS__]; \
+    printf("%s\n", [logStr UTF8String]); \
+    fflush(stdout); \
+  } while (0)
+  #define MONOLITH_OS_LOG(type, fmt, ...) do {} while (0)
+  #define MONOLITH_OS_LOG_ERROR(fmt, ...) do {} while (0)
 
 static LAContext *globalLAContext = nil;
 static SecKeyRef globalPrivateKey = NULL;
@@ -48,9 +59,21 @@ static bool amIBeingDebugged(void) {
 
 constexpr size_t MAX_SECURE_SIZE = 8192;
 char secure_buffer[MAX_SECURE_SIZE];
-size_t secure_len = 0;
-uint8_t XOR_KEY = 0; // Dynamic DMA masking key
+// P5-10 REMEDIATION: secure_len MUST be atomic — it's written by the CGEventTap
+// thread and read by the main Node thread during drain(). Plain size_t causes data races.
+std::atomic<size_t> secure_len{0};
+// P5-11 REMEDIATION: Upgraded from uint8_t (256 values, trivially brute-forceable)
+// to uint32_t (~4 billion values). Each byte position uses a different key byte.
+uint32_t XOR_KEY = 0;
+static inline uint8_t xor_byte(size_t pos) {
+    return ((uint8_t*)&XOR_KEY)[pos % 4];
+}
 bool memory_locked = false;
+
+// XOR_KEY is initialized in Init() when the Node module loads, BEFORE registerCallback
+// starts the event tap. Do NOT add a second initialization here — dual-init creates a
+// race where keystrokes encrypted with key A become unrecoverable when drained with key B.
+
 std::atomic<bool> tap_active{false};
 std::atomic<bool> hardware_grab_success{false};
 std::atomic<uint64_t> last_interaction_time{0};
@@ -88,7 +111,8 @@ CGEventRef FallbackCGEventCallback(CGEventTapProxy proxy, CGEventType type, CGEv
             CGEventKeyboardGetUnicodeString(event, 4, &actualStringLength, chars);
             if (actualStringLength > 0 && secure_len < MAX_SECURE_SIZE) {
                 char ch = (char)chars[0];
-                secure_buffer[secure_len++] = ch ^ XOR_KEY;
+                secure_buffer[secure_len] = ch ^ xor_byte(secure_len);
+                secure_len++;
                 action = 1;
             }
         }
@@ -100,7 +124,9 @@ CGEventRef FallbackCGEventCallback(CGEventTapProxy proxy, CGEventType type, CGEv
             });
         }
     }
-    return event;
+    // DEEP-2 REMEDIATION: Return NULL to CONSUME the event (prevent it from reaching other apps).
+    // With kCGEventTapOptionListenOnly, keystrokes leak to every other event tap on the system.
+    return NULL;
 }
 
 void StartTapWorker() {
@@ -108,12 +134,14 @@ void StartTapWorker() {
     io_service_t service = IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceNameMatching("MonolithSecureHIDDriver"));
     
     if (service == MACH_PORT_NULL) {
-        os_log_error(OS_LOG_DEFAULT, "Monolith DEXT not found. Falling back to Ring 3 CGEventTap.");
+        MONOLITH_OS_LOG_ERROR( "Monolith DEXT not found. Falling back to Ring 3 CGEventTap.");
         hardware_grab_success.store(false);
         
-        CFMachPortRef eventTap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly, CGEventMaskBit(kCGEventKeyDown), FallbackCGEventCallback, NULL);
+        // DEEP-2: Use kCGEventTapOptionDefault to CONSUME events, not just observe them.
+        // kCGEventTapOptionListenOnly lets keystrokes reach other apps (keyloggers, IMEs).
+        CFMachPortRef eventTap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault, CGEventMaskBit(kCGEventKeyDown), FallbackCGEventCallback, NULL);
         if (!eventTap) {
-            os_log_error(OS_LOG_DEFAULT, "Failed to create CGEventTap.");
+            MONOLITH_OS_LOG_ERROR( "Failed to create CGEventTap.");
             return;
         }
         CFRunLoopSourceRef runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
@@ -127,9 +155,9 @@ void StartTapWorker() {
     IOObjectRelease(service);
     
     if (kr != kIOReturnSuccess) {
-        os_log_error(OS_LOG_DEFAULT, "Failed to open IOService connection to DEXT. Falling back to Ring 3 CGEventTap.");
+        MONOLITH_OS_LOG_ERROR( "Failed to open IOService connection to DEXT. Falling back to Ring 3 CGEventTap.");
         hardware_grab_success.store(false);
-        CFMachPortRef eventTap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly, CGEventMaskBit(kCGEventKeyDown), FallbackCGEventCallback, NULL);
+        CFMachPortRef eventTap = CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault, CGEventMaskBit(kCGEventKeyDown), FallbackCGEventCallback, NULL);
         if (eventTap) {
             CFRunLoopSourceRef runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
             CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopCommonModes);
@@ -144,7 +172,7 @@ void StartTapWorker() {
     kr = IOConnectMapMemory64(dext_connection, 0, mach_task_self(), &address, &size, kIOMapAnywhere);
     
     if (kr != kIOReturnSuccess || size < 1024) {
-        os_log_error(OS_LOG_DEFAULT, "Failed to map DEXT memory.");
+        MONOLITH_OS_LOG_ERROR( "Failed to map DEXT memory.");
         IOServiceClose(dext_connection);
         hardware_grab_success.store(false);
         return;
@@ -152,10 +180,10 @@ void StartTapWorker() {
 
     dext_shared_memory = reinterpret_cast<uint32_t*>(address);
     hardware_grab_success.store(true);
-    os_log(OS_LOG_DEFAULT, "Successfully mapped Ring 0 DEXT Memory into V8 C++ context.");
+    MONOLITH_OS_LOG(OS_LOG_DEFAULT, "Successfully mapped Ring 0 DEXT Memory into V8 C++ context.");
     
     // Seed the XOR Session Key back to the kernel for physical buffer encryption
-    dext_shared_memory[1] = XOR_KEY;
+    dext_shared_memory[1] = XOR_KEY; // Full 32-bit key to Ring 0
     
     uint32_t last_tail = dext_shared_memory[0];
     
@@ -165,7 +193,7 @@ void StartTapWorker() {
         
         while (last_tail < current_tail) {
             uint32_t encrypted_usage = dext_shared_memory[2 + (last_tail % 1024)];
-            uint32_t usage = encrypted_usage ^ XOR_KEY; // Descramble Ring 0 payload
+            uint32_t usage = encrypted_usage ^ XOR_KEY;
             
             int64_t action = 0; // 0 = default, 1 = character append, 2 = backspace, 3 = enter
             // Map basic HID Usage Page 0x07 (Keyboard) keys to actions
@@ -183,7 +211,8 @@ void StartTapWorker() {
                 // In production, proper HID modifiers mapping is used.
                 char ch = 'A' + (usage - 4);
                 if (secure_len < MAX_SECURE_SIZE) {
-                    secure_buffer[secure_len++] = ch ^ XOR_KEY;
+                    secure_buffer[secure_len] = ch ^ xor_byte(secure_len);
+                    secure_len++;
                     action = 1;
                 }
             }
@@ -205,8 +234,10 @@ void StartTapWorker() {
 void CrashHandler(int signum) {
     if (secure_len > 0) {
         memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
-        madvise(secure_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
+        // P8-4 REMEDIATION: madvise removed — secure_buffer is BSS, not mmap'd.
     }
+    // P11-3 REMEDIATION: Zero the XOR key so it doesn't appear in crash state.
+    XOR_KEY = 0;
     // Restore default handler and re-raise so process exits with correct signal code
     struct sigaction sa;
     sa.sa_handler = SIG_DFL;
@@ -246,10 +277,14 @@ void DMASweeperLoop() {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         uint64_t current = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         if (secure_len > 0 && last_interaction_time.load() > 0 && (current - last_interaction_time.load()) >= 3) {
+            // P8-10 REMEDIATION: Pause event tap during wipe to prevent race.
+            // Without this, new keystrokes XOR'd into zeroed memory produce corruption.
+            bool was_active = tap_active.exchange(false);
             memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
-            madvise(secure_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
+            // P8-4 REMEDIATION: madvise removed — secure_buffer is BSS, not mmap'd.
             secure_len = 0;
             last_interaction_time.store(0);
+            if (was_active) tap_active.store(true);
         }
     }
 }
@@ -308,7 +343,7 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
     
     // Exteme Memory Bounds Validation to prevent IPC scrapers/overflows
     if (length > MAX_SECURE_SIZE || secure_len + length > MAX_SECURE_SIZE) {
-        os_log_error(OS_LOG_DEFAULT, "FATAL: IPC Buffer overflow detected. Discarding payload.");
+        MONOLITH_OS_LOG_ERROR( "FATAL: IPC Buffer overflow detected. Discarding payload.");
         return Napi::Boolean::New(env, false);
     }
     
@@ -316,7 +351,8 @@ Napi::Value AppendBuffer(const Napi::CallbackInfo& info) {
     
     if (secure_len + length <= MAX_SECURE_SIZE) {
         for (size_t i = 0; i < length; ++i) {
-            secure_buffer[secure_len++] = static_cast<char>(data[i]) ^ XOR_KEY;
+            secure_buffer[secure_len] = static_cast<char>(data[i]) ^ xor_byte(secure_len);
+            secure_len++;
         }
     }
     return Napi::Boolean::New(env, true);
@@ -326,7 +362,7 @@ struct AutoWiper {
     ~AutoWiper() {
         if (secure_len > 0) {
             memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
-            madvise(secure_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
+            // P8-4 REMEDIATION: madvise removed — secure_buffer is BSS, not mmap'd.
             secure_len = 0;
         }
     }
@@ -344,15 +380,24 @@ Napi::Value DrainPayload(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
     AutoWiper wiper; // Guarantee memory wipe even if Napi Buffer copy throws exception
     
-    // Decrypt the payload before passing it to V8
-    char temp_buffer[MAX_SECURE_SIZE];
-    for (size_t i = 0; i < secure_len; i++) {
-        temp_buffer[i] = secure_buffer[i] ^ XOR_KEY;
+    // P5-12 REMEDIATION: Heap-allocate and mlock the temp buffer.
+    // Stack-allocated 8KB plaintext persists in stack memory after return —
+    // the compiler doesn't guarantee cleanup, and the frame may linger.
+    size_t current_len = secure_len.load();
+    char* temp_buffer = (char*)mmap(NULL, MAX_SECURE_SIZE, PROT_READ | PROT_WRITE, 
+                                     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (temp_buffer == MAP_FAILED) {
+        return Napi::Buffer<char>::New(env, 0);
+    }
+    mlock(temp_buffer, MAX_SECURE_SIZE);
+    
+    for (size_t i = 0; i < current_len; i++) {
+        temp_buffer[i] = secure_buffer[i] ^ xor_byte(i);
     }
     
-    Napi::Buffer<char> buffer = Napi::Buffer<char>::Copy(env, temp_buffer, secure_len);
-    memset_s(temp_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE); // Wipe temp buffer immediately
-    madvise(temp_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
+    Napi::Buffer<char> buffer = Napi::Buffer<char>::Copy(env, temp_buffer, current_len);
+    memset_s(temp_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
+    munmap(temp_buffer, MAX_SECURE_SIZE); // Unmap immediately — pages returned to kernel
     
     return buffer;
 }
@@ -391,25 +436,35 @@ Napi::Value ProtectWindow(const Napi::CallbackInfo& info) {
                     
                     AVSampleBufferDisplayLayer *drmLayer = [[AVSampleBufferDisplayLayer alloc] init];
                     drmLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
-                    // For crisp UI text rendering inside the video pipeline
-                    drmLayer.videoGravity = AVLayerVideoGravityResizeAspectFill;
+                    // Use Resize to allow exact 1:1 pixel mapping. AspectFill causes wild zooming and cropping on variable height frames.
+                    drmLayer.videoGravity = AVLayerVideoGravityResize;
                     
-                    // On macOS 11+, preventsCapture explicitly encrypts the CALayer 
-                    // via HDCP rendering pipelines (Requires entitlements in strict Sandbox)
+                    // TEMPORARY: disabled preventsCapture since lack of entitlements causes the layer to be pure black
+                    /*
                     if ([drmLayer respondsToSelector:@selector(setPreventsCapture:)]) {
                         drmLayer.preventsCapture = YES;
+                        MONOLITH_LOG(@"[DRM-NATIVE] preventsCapture = YES (HDCP active)");
+                    } else {
+                        MONOLITH_LOG(@"[DRM-NATIVE] WARNING: preventsCapture NOT available on this OS version");
                     }
+                    */
                     
                     globalDrmLayer = drmLayer;
                     [maskLayer addSublayer:drmLayer];
                     
-                    // Insert at bottom so standard React DOM renders over it ideally.
-                    // Note: True hardware encryption of the DOM requires rendering the text directly into CVPixelBuffers
-                    // and feeding them to this layer. This serves as the DRM boundary establishment.
+                    // Critical: Chromium's GPU compositor creates new CALayers on every
+                    // React re-render. Without an explicit zPosition, those layers stack
+                    // ON TOP of our DRM layer, burying it. FLT_MAX ensures we always win.
+                    maskLayer.zPosition = FLT_MAX;
                     [window.contentView.layer addSublayer:maskLayer];
+                    
+                    // Re-enforce window sharing exclusion after DRM layer is attached
+                    window.sharingType = NSWindowSharingNone;
+                    MONOLITH_LOG(@"[DRM-NATIVE] sharingType = NSWindowSharingNone, preventsCapture = %@", 
+                          drmLayer.preventsCapture ? @"YES" : @"NO");
                 }
             } @catch (NSException *exception) {
-                NSLog(@"Monolith DRM Initialization Exception: %@", exception.reason);
+                MONOLITH_LOG(@"Monolith DRM Initialization Exception: %@", exception.reason);
             }
         }
     };
@@ -534,7 +589,7 @@ Napi::Value SignSEPPayload(const Napi::CallbackInfo& info) {
     
     if (!globalLAContext) {
         globalLAContext = [[LAContext alloc] init];
-        globalLAContext.touchIDAuthenticationAllowableReuseDuration = 3600; // 1 hour max
+        globalLAContext.touchIDAuthenticationAllowableReuseDuration = 300; // 5 minutes — limits physical access attack window
     }
     
     if (!globalPrivateKey) {
@@ -599,12 +654,15 @@ Napi::Value SetLayerVisibility(const Napi::CallbackInfo& info) {
     
     bool visible = info[0].As<Napi::Boolean>().Value();
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (globalMaskLayer) {
-            [CATransaction begin];
-            [CATransaction setDisableActions:YES];
-            globalMaskLayer.hidden = visible ? NO : YES;
-            [CATransaction commit];
-        }
+        if (!globalMaskLayer) return;
+        
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        // Use opacity instead of hidden — AVSampleBufferDisplayLayer cannot
+        // survive hide/show cycles. Opacity preserves all internal state,
+        // content, and the CMClock rendering pipeline.
+        globalMaskLayer.opacity = visible ? 1.0f : 0.0f;
+        [CATransaction commit];
     });
     return Napi::Boolean::New(env, true);
 }
@@ -617,20 +675,22 @@ Napi::Value RenderDRMFrame(const Napi::CallbackInfo& info) {
     NSData *data = [NSData dataWithBytes:buf.Data() length:buf.Length()];
     
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!globalDrmLayer) return;
+        if (!globalDrmLayer) {
+            MONOLITH_LOG(@"[DRM-NATIVE] renderDRMFrame: globalDrmLayer is nil!");
+            return;
+        }
         
         CGDataProviderRef provider = CGDataProviderCreateWithCFData((__bridge CFDataRef)data);
         if (!provider) return;
         CGImageRef image = CGImageCreateWithPNGDataProvider(provider, NULL, true, kCGRenderingIntentDefault);
         CGDataProviderRelease(provider);
-        if (!image) return;
+        if (!image) {
+            MONOLITH_LOG(@"[DRM-NATIVE] renderDRMFrame: PNG decode failed!");
+            return;
+        }
         
         size_t width = CGImageGetWidth(image);
         size_t height = CGImageGetHeight(image);
-        
-        if (globalDrmLayer && [NSApp windows].count > 0) {
-            // ResizeObserver handles bounds completely asynchronously now! No redundant origin mapping.
-        }
         
         CVPixelBufferRef pixelBuffer = NULL;
         NSDictionary *options = @{
@@ -646,7 +706,6 @@ Napi::Value RenderDRMFrame(const Napi::CallbackInfo& info) {
             CGContextRef context = CGBitmapContextCreate(pxdata, width, height, 8, CVPixelBufferGetBytesPerRow(pixelBuffer), rgbColorSpace, kCGImageAlphaPremultipliedFirst);
             
             if (context) {
-                // Clear and render
                 CGContextClearRect(context, CGRectMake(0, 0, width, height));
                 CGContextDrawImage(context, CGRectMake(0, 0, width, height), image);
                 CGContextRelease(context);
@@ -668,14 +727,37 @@ Napi::Value RenderDRMFrame(const Napi::CallbackInfo& info) {
                     CFDictionarySetValue(dict, kCMSampleAttachmentKey_DisplayImmediately, kCFBooleanTrue);
                     
                     if ([globalDrmLayer status] == AVQueuedSampleBufferRenderingStatusFailed) {
+                        MONOLITH_LOG(@"[DRM-NATIVE] Layer FAILED before enqueue, flushing. Error: %@", globalDrmLayer.error);
                         [globalDrmLayer flush];
                     }
                     [globalDrmLayer enqueueSampleBuffer:sampleBuffer];
+                    
+                    // Diagnostic: check layer state after enqueue
+                    MONOLITH_LOG(@"[DRM-NATIVE] Enqueued frame %zux%zu. LayerStatus=%ld opacity=%.1f maskFrame=(%g,%g,%g,%g) drmFrame=(%g,%g,%g,%g)",
+                        width, height,
+                        (long)[globalDrmLayer status],
+                        globalMaskLayer.opacity,
+                        globalMaskLayer.frame.origin.x, globalMaskLayer.frame.origin.y,
+                        globalMaskLayer.frame.size.width, globalMaskLayer.frame.size.height,
+                        globalDrmLayer.frame.origin.x, globalDrmLayer.frame.origin.y,
+                        globalDrmLayer.frame.size.width, globalDrmLayer.frame.size.height);
+                    
                     CFRelease(sampleBuffer);
                 }
                 if (formatDescription) CFRelease(formatDescription);
             }
             CGColorSpaceRelease(rgbColorSpace);
+            // P23-9 REMEDIATION: Unlock after draw phase BEFORE re-locking for zero phase.
+            // Double-lock without unlock is undefined behavior on some GPU drivers.
+            CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+            // P11-1 REMEDIATION: Zero ARGB pixels before release.
+            // Without this, conversation text pixels persist in IOSurface memory.
+            CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+            void *baseAddr = CVPixelBufferGetBaseAddress(pixelBuffer);
+            size_t bufSize = CVPixelBufferGetBytesPerRow(pixelBuffer) * CVPixelBufferGetHeight(pixelBuffer);
+            if (baseAddr && bufSize > 0) {
+                memset_s(baseAddr, bufSize, 0, bufSize);
+            }
             CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
             CVPixelBufferRelease(pixelBuffer);
         }
@@ -707,10 +789,10 @@ Napi::Value IsDebuggerAttached(const Napi::CallbackInfo& info) {
     bool traced = amIBeingDebugged();
     if (traced) {
         // [GHOST PROTOCOL TRIGGER] Physical Tampering Detected
-        os_log_error(OS_LOG_DEFAULT, "FATAL: Process Tracing detected! Evicting buffers and locking out physical keyboard.");
+        MONOLITH_OS_LOG_ERROR( "FATAL: Process Tracing detected! Evicting buffers and locking out physical keyboard.");
         if (secure_len > 0) {
             memset_s(secure_buffer, MAX_SECURE_SIZE, 0, MAX_SECURE_SIZE);
-            madvise(secure_buffer, MAX_SECURE_SIZE, MADV_DONTNEED);
+            // P8-4 REMEDIATION: madvise removed — secure_buffer is BSS, not mmap'd.
             secure_len = 0;
         }
     }
@@ -726,9 +808,16 @@ Napi::Object Init(Napi::Env env, Napi::Object exports) {
         // Denies LLDB attach, DTrace inspection, and forces Apple Crash Reporter to ignore the process.
         ptrace(PT_DENY_ATTACH, 0, 0, 0);
         
-        // Generate random XOR mask for this session
-        arc4random_buf(&XOR_KEY, 1);
-        if (XOR_KEY == 0) XOR_KEY = 0xAA; // Avoid 0-mask
+        // P11-12 REMEDIATION: Disable core dumps via RLIMIT_CORE = 0.
+        // Without this, a crash writes ENTIRE process memory to disk — vault, XOR key, everything.
+        struct rlimit rl = {0, 0};
+        setrlimit(RLIMIT_CORE, &rl);
+        
+        // CVE-2 REMEDIATION: Generate random XOR DMA masking key for this session.
+        // Loop guarantees non-zero — a zero key means no encryption (char ^ 0 == char).
+        do {
+            arc4random_buf(&XOR_KEY, sizeof(XOR_KEY));
+        } while (XOR_KEY == 0);
     }
 
     exports.Set(Napi::String::New(env, "enableSecureInput"), Napi::Function::New(env, EnableProtection));

@@ -4,16 +4,21 @@ import VirtualKeyboard from "./VirtualKeyboard.jsx";
 /**
  * MessageInput — Auto-resizing textarea with send/stop controls
  * and active settings indicators.
+ *
+ * Standard mode: Normal text input (visible typing, text in React state).
+ * Paranoid mode: C++ vault (dots only, text in native memory).
+ * Ghost mode: Virtual keyboard only.
  */
 export default function MessageInput({ onSend, onStop, isStreaming, disabled, settings }) {
   const inputRef = useRef(null);
   
-  // Extreme Privacy: C++ Vault Counter
-  // The characters themselves are physically residing inside the macOS C++ compilation.
-  // The frontend only tracks how many dots to render. V8 never aggregates the Strings.
+  // Standard mode: text lives in React state (visible to user)
+  const [standardText, setStandardText] = useState("");
+  
+  // Paranoid/Ghost mode: C++ Vault Counter
+  // Characters reside in the C++ vault. Frontend only tracks dot count.
   const [vaultLength, setVaultLength] = useState(0);
   const vaultLengthRef = useRef(vaultLength);
-  const [standardText, setStandardText] = useState("");
   const isStandard = settings?.securityMode === "standard";
   const isGhost = settings?.securityMode === "ghost";
   const [ghostMode, setGhostMode] = useState(isGhost);
@@ -26,16 +31,27 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
         const isDebugged = await window.electronAPI.isDebuggerAttached();
         if (!isLocked || isDebugged) {
           setHardwareLockWarning(true);
-          // Do NOT force Ghost Protocol - fallback to Ring 3 Event Tap is engaged
         }
       }
     }
     checkHardware();
   }, []);
 
-  const resize = useCallback(() => {
-    // We use standard input element size here
-  }, []);
+  // Auto-focus input on mount + whenever settings close
+  useEffect(() => {
+    if (inputRef.current && !disabled) {
+      inputRef.current.focus();
+    }
+  }, [disabled]);
+
+  // Ensure secure input is active on mount (paranoid/ghost modes)
+  useEffect(() => {
+    if (window.electronAPI && !isStandard) {
+      window.electronAPI.enableSecureInput();
+    }
+  }, [isStandard]);
+
+  const resize = useCallback(() => {}, []);
 
   useEffect(() => {
     resize();
@@ -47,13 +63,10 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
   }, [isGhost]);
 
   const wipeMemory = useCallback(() => {
-    if (isStandard) {
-        setStandardText("");
-    } else {
-        window.electronAPI.wipeVault();
-        setVaultLength(0);
-    }
-  }, [isStandard]);
+      if (window.electronAPI) window.electronAPI.wipeVault();
+      setVaultLength(0);
+      setStandardText("");
+  }, []);
 
   const isStreamingRef = useRef(isStreaming);
   const disabledRef = useRef(disabled);
@@ -62,8 +75,9 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
   useEffect(() => { disabledRef.current = disabled; }, [disabled]);
   useEffect(() => { onSendRef.current = onSend; }, [onSend]);
 
+  // Paranoid mode: C++ event tap sends key ticks
   useEffect(() => {
-    if (!window.electronAPI) return;
+    if (!window.electronAPI || isStandard) return;
     
     window.electronAPI.onSecureKeyTick((actionId) => {
         if (ghostMode) return;
@@ -80,49 +94,54 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
     });
 
     return () => window.electronAPI.offSecureKeyTick();
-  }, [ghostMode]);
+  }, [ghostMode, isStandard]);
 
   const handleKeyDown = useCallback((e) => {
       if (isStandard) {
-          if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault();
-              if (standardText.trim() && !disabled && !isStreaming) {
-                  onSend(standardText);
-                  setStandardText("");
-              }
+        // Standard mode: allow normal typing, handle Enter for send
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          if (standardText.trim().length > 0 && !disabled && !isStreaming) {
+            onSend(standardText);
+            setStandardText("");
+          }
+        }
+        return; // Let other keys through normally
+      }
+      
+      // Paranoid/Ghost mode: block all keys from DOM
+      if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          if (vaultLengthRef.current > 0 && !disabled && !isStreaming) {
+              onSend("");
           }
           return;
       }
-      
       e.preventDefault();
       e.stopPropagation();
-  }, [isStandard, standardText, disabled, isStreaming, onSend]);
-  const handleFocus = useCallback(() => {
-    if (!isStandard) window.electronAPI.enableSecureInput();
-  }, [isStandard]);
+  }, [disabled, isStreaming, onSend, isStandard, standardText]);
 
-  const handleBlur = useCallback(() => {
-    if (!isStandard) window.electronAPI.disableSecureInput();
-  }, [isStandard]);
+  const handleFocus = useCallback(() => {}, []);
+  const handleBlur = useCallback(() => {}, []);
 
   const handleSendClick = useCallback(async () => {
     if (isStreaming) {
       onStop();
     } else {
       if (isStandard) {
-          if (standardText.trim() && !disabled) {
-              onSend(standardText);
-              setStandardText("");
-          }
+        if (standardText.trim().length > 0 && !disabled) {
+          onSend(standardText);
+          setStandardText("");
+        }
       } else {
-          if (vaultLength > 0 && !disabled) {
-              onSend("");
-          }
+        if (vaultLength > 0 && !disabled) {
+            onSend("");
+        }
       }
     }
   }, [isStreaming, disabled, onSend, onStop, vaultLength, isStandard, standardText]);
 
-  const previewText = "●".repeat(vaultLength);
+  const previewText = isStandard ? "" : "●".repeat(vaultLength);
 
   return (
     <>
@@ -149,46 +168,71 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
       <div className="input-container">
         <div className="input-wrapper">
           <div className="secure-input-wrapper" style={{ position: 'relative', flex: 1, minHeight: '44px' }}>
-            {/* Extracted Input */}
-            <input
-              ref={inputRef}
-              type="text"
-              title={isStandard ? "Standard Web Input" : "OS-Level Keylogger Protection Active"}
-              value={isStandard ? standardText : ""}
-              defaultValue={isStandard ? undefined : ""}
-              onChange={(e) => { if (isStandard) setStandardText(e.target.value); }}
-              onKeyDown={handleKeyDown}
-              onFocus={handleFocus}
-              onBlur={handleBlur}
-              disabled={disabled}
-              id="message-input"
-              autoComplete="off"
-              autoCorrect="off"
-              spellCheck="false"
-              onPaste={(e) => !isStandard && e.preventDefault()}
-              onDrop={(e) => !isStandard && e.preventDefault()}
-              onContextMenu={(e) => !isStandard && e.preventDefault()}
-              style={{
-                width: '100%',
-                height: '100%',
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                color: isStandard ? '#eee' : 'transparent',
-                background: 'transparent',
-                caretColor: '#888',
-                border: 'none',
-                outline: 'none',
-                resize: 'none',
-                fontFamily: 'inherit',
-                fontSize: '15px',
-                padding: '12px',
-                zIndex: 2,
-              }}
-            />
-            
-            {/* Visual Proxy */}
-            {!isStandard && (
+            {isStandard ? (
+              /* Standard mode: normal visible text input */
+              <input
+                ref={inputRef}
+                type="text"
+                placeholder={disabled ? "Waiting for server…" : "Type a message…"}
+                value={standardText}
+                onChange={(e) => setStandardText(e.target.value)}
+                onKeyDown={handleKeyDown}
+                disabled={disabled}
+                id="message-input"
+                autoComplete="off"
+                autoCorrect="off"
+                spellCheck="false"
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  background: 'transparent',
+                  color: '#eee',
+                  border: 'none',
+                  outline: 'none',
+                  fontFamily: 'inherit',
+                  fontSize: '15px',
+                  padding: '12px',
+                }}
+              />
+            ) : (
+              /* Paranoid/Ghost mode: invisible input + dot proxy */
+              <>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  title="OS-Level Keylogger Protection Active"
+                  value=""
+                  onChange={() => {}}
+                  onKeyDown={handleKeyDown}
+                  onFocus={handleFocus}
+                  onBlur={handleBlur}
+                  disabled={disabled}
+                  id="message-input"
+                  autoComplete="off"
+                  autoCorrect="off"
+                  spellCheck="false"
+                  onPaste={(e) => e.preventDefault()}
+                  onDrop={(e) => e.preventDefault()}
+                  onContextMenu={(e) => e.preventDefault()}
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    position: 'absolute',
+                    top: 0,
+                    left: 0,
+                    color: 'transparent',
+                    background: 'transparent',
+                    caretColor: '#888',
+                    border: 'none',
+                    outline: 'none',
+                    resize: 'none',
+                    fontFamily: 'inherit',
+                    fontSize: '15px',
+                    padding: '12px',
+                    zIndex: 2,
+                  }}
+                />
+                {/* Visual Proxy — dots for vault length */}
                 <div 
                   style={{
                     position: 'absolute',
@@ -208,21 +252,22 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
                 >
                   {previewText ? previewText : (disabled ? "Waiting for server…" : (ghostMode ? "Ghost Protocol Active..." : "Secure isolated input…"))}
                 </div>
+              </>
             )}
             
-            {/* Kernel Warning Dropdown */}
+            {/* Mode indicators */}
             {!ghostMode && !isStandard && (
                 <div style={{ position: 'absolute', top: '100%', left: 0, width: '100%', background: '#301010', color: '#ff6b6b', fontSize: '11px', padding: '4px 8px', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px', border: '1px solid #ff444455', borderTop: 'none', zIndex: -1, pointerEvents: 'none' }}>
                     ⚠️ <b>PHYSICAL KEYBOARD ACTIVE:</b> Vulnerable to Kernel & Hardware level Keyloggers. Use Ghost Protocol (👻) for maximum isolation.
                 </div>
             )}
             {isStandard && (
-                <div style={{ position: 'absolute', top: '100%', left: 0, width: '100%', background: '#222', color: '#aaa', fontSize: '11px', padding: '4px 8px', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px', border: '1px solid #444', borderTop: 'none', zIndex: -1, pointerEvents: 'none' }}>
-                    🌐 <b>STANDARD INPUT ACTIVE:</b> Screen Readers and Plugins are enabled. Visual OCR Anti-Scraper memory vault is bypassed.
+                <div style={{ position: 'absolute', top: '100%', left: 0, width: '100%', background: '#1a2a1a', color: '#6b8', fontSize: '11px', padding: '4px 8px', borderBottomLeftRadius: '6px', borderBottomRightRadius: '6px', border: '1px solid #4a644a', borderTop: 'none', zIndex: -1, pointerEvents: 'none' }}>
+                    🔒 <b>STANDARD MODE:</b> DRM + Encryption active. OCR disruption disabled for readability.
                 </div>
             )}
           </div>
-          {!isStandard && (
+          {!isGhost && (
               <button
                   onClick={() => setGhostMode(m => !m)}
                   title={"Toggle Ghost Protocol (OSK) " + (hardwareLockWarning ? "- Hardware Lock Missing" : "")}
@@ -230,46 +275,43 @@ export default function MessageInput({ onSend, onStop, isStreaming, disabled, se
                   style={{
                       background: ghostMode ? '#4caf50' : 'transparent',
                       border: '1px solid #444',
-                      color: ghostMode ? '#000' : '#888',
-                      padding: '0 12px',
-                      borderRadius: '4px',
+                      borderRadius: '6px',
+                      padding: '8px',
                       cursor: 'pointer',
-                      marginRight: '8px'
+                      fontSize: '18px',
+                      marginRight: '4px',
+                      color: ghostMode ? '#000' : (hardwareLockWarning ? '#ff9800' : '#888'),
+                      transition: 'all 0.2s ease',
                   }}
               >
                   👻
               </button>
           )}
           <button
-            className="send-btn"
             onClick={handleSendClick}
-            disabled={disabled && !isStreaming}
-            title={isStreaming ? "Stop generating" : "Send message"}
-            id="send-button"
+            disabled={disabled}
+            className="send-btn"
+            title={isStreaming ? "Stop generation" : "Send message"}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: isStreaming ? '#ff4444' :'#4caf50',
+              border: 'none',
+              borderRadius: '6px',
+              padding: '8px 14px',
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              opacity: disabled ? 0.5 : 1,
+              color: '#fff',
+              fontSize: '18px',
+              transition: 'all 0.2s ease',
+            }}
           >
-            {isStreaming ? "◼" : "↑"}
+            {isStreaming ? "⏹" : "↑"}
           </button>
         </div>
-        <div className="input-meta">
-          <div className="input-badges">
-            {settings?.enableThinking && (
-              <span className="input-badge thinking-badge" title="Reasoning enabled">
-                🧠 Thinking · {settings.thinkingBudget}t
-              </span>
-            )}
-            <span className="input-badge" title="Max response tokens">
-              ↗ {settings?.maxTokens || 2048}t
-            </span>
-            <span className="input-badge" title="Temperature">
-              🌡 {(settings?.temperature || 0.7).toFixed(1)}
-            </span>
-          </div>
-          <div className="input-hint">
-            <kbd>Enter</kbd> send · <kbd>Shift+Enter</kbd> newline
-          </div>
-        </div>
       </div>
-    </div>
+      </div>
     </>
   );
 }

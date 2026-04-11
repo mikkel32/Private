@@ -8,7 +8,7 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("electronAPI", {
-  platform: process.platform,
+  // P13-6 REMEDIATION: process.platform REMOVED — OS fingerprint leak
   onWindowBlur: (callback) => ipcRenderer.on("window-blur", () => callback()),
   onWindowFocus: (callback) => ipcRenderer.on("window-focus", () => callback()),
   onSecureKeyTick: (callback) => ipcRenderer.on("secure-key-tick", (_, actionId) => callback(actionId)),
@@ -17,18 +17,17 @@ contextBridge.exposeInMainWorld("electronAPI", {
   disableSecureInput: () => ipcRenderer.send("secure-disable"),
   isHardwareLocked: () => ipcRenderer.invoke("secure-check-hardware"),
   isDebuggerAttached: () => ipcRenderer.invoke("secure-check-debugger"),
-  initSAB: (sab) => ipcRenderer.send("secure-init-sab", sab),
   appendBuffer: (buffer) => ipcRenderer.send("secure-append", buffer),
   backspace: () => ipcRenderer.send("secure-backspace"),
   wipeVault: () => ipcRenderer.send("secure-wipe"),
-  sendStandardMessage: (configObj, text) => ipcRenderer.invoke("send-standard-message", configObj, text),
-  stopGeneration: () => ipcRenderer.invoke("stop-generation"),
-  drainVault: () => ipcRenderer.invoke("secure-drain"),
+  // P16-13 REMEDIATION: stopGeneration REMOVED — no handler in main.js (dead API surface)
+  // P4-1 REMEDIATION: drainVault REMOVED from preload. It exposed raw plaintext to ANY
+  // JS in the renderer context. Drain is now main-process-only via secure-network-dispatch.
   syncCanvasBounds: (bounds) => ipcRenderer.send("secure-canvas-bounds", bounds),
   setSecureLayerVisibility: (visible) => ipcRenderer.send("secure-layer-visibility", visible),
   // Protocol Omega: Network Dispatch
   secureNetworkDispatch: (configObj) => ipcRenderer.send("secure-network-dispatch", configObj),
-  fetchHistory: (id) => ipcRenderer.send("fetch-history", id),
+  fetchHistory: (id, mode) => ipcRenderer.send("fetch-history", id, mode),
   checkServerHealth: () => ipcRenderer.invoke("check-server-health"),
   exportVault: (id) => ipcRenderer.send("export-vault", id),
   onVaultExportKey: (callback) => ipcRenderer.on("vault-export-key", (_, buffer) => callback(buffer)),

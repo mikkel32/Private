@@ -25,6 +25,12 @@ venv.bak/
 .env.local
 .env.*.local
 *.pem
+cert_fingerprint.txt
+.model_sha256
+debug.log
+sep_init
+sep_signer
+sep_crypto
 
 # Machine Learning Models
 *.gguf
@@ -53,10 +59,27 @@ Icon
 
 # OS & Application Caches
 *.log
+*.err
 .eslintcache
-.DS_Store
-.DS_Store
 .DS_Store
 /build/Release
 /build
 /.cache
+
+# P20-4/5/6/7/8/9/10/11 REMEDIATION: Exclude debug artifacts, test scripts, crash data.
+# These files reveal attack methodologies, filesystem paths, and API enumeration patterns.
+test_*
+sandbox_pentest.py
+check_openapi.py
+inspect_session.js
+methods.txt
+malware.txt
+compile_commands.json
+monolith-sandbox.sb
+monolith.sbe
+monolith_test.sb
+test-sandbox*.sb
+crash.*
+test.png
+test_adversarial.png
+test_sec_input

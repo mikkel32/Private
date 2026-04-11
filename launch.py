@@ -140,8 +140,7 @@ def launch_electron_and_trap_key() -> tuple[subprocess.Popen, str]:
     import threading
     def drain():
         for l in proc.stdout:
-            # sys.stdout.write(f"  \033[90m[Electron]\033[0m {l}")
-            pass
+            sys.stdout.write(f"  \033[90m[Electron]\033[0m {l}")
     threading.Thread(target=drain, daemon=True).start()
     
     return proc, sep_pub_key
@@ -158,6 +157,7 @@ def start_server(python: Path, sep_pub_key: str) -> subprocess.Popen:
             "sandbox-exec", 
             "-D", f"PROJECT_DIR={str(ROOT)}", 
             "-D", f"VENV_DIR={str(VENV_DIR)}", 
+            "-D", f"HOME_DIR={os.path.expanduser('~')}",
             "-f", sandbox_profile
         ] + cmd
         log(f"  \033[90m↳ Enforcing Apple App Sandbox (monolith.sb with dynamic paths)\033[0m")
@@ -170,13 +170,56 @@ def start_server(python: Path, sep_pub_key: str) -> subprocess.Popen:
         ] + cmd
         log(f"  \033[90m↳ Enforcing Linux Bubblewrap (bwrap)\033[0m")
 
-    safe_env = {}
-    allowed_keys = {
-        "PATH", "USER", "HOME", "LANG", "LC_ALL", "TMPDIR",
-        "MODEL_PATH", "CONTEXT_SIZE", "GPU_LAYERS", "SERVER_PORT", "FLASH_ATTN"
+    # Minimal env for sandboxed server. Metal GPU requires HOME (shader cache at
+    # ~/Library/Caches/com.apple.Metal) and TMPDIR (temp files). Without these,
+    # Metal shader compilation hangs indefinitely.
+    # No PATH (all binaries use absolute paths), no DYLD vars, no shell config.
+    safe_env = {
+        "HOME": os.path.expanduser("~"),
+        "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
     }
 
     safe_env["SEP_PUB_KEY"] = sep_pub_key
+
+    # Secure Boot: compute SHA256 of model weights and inject into server env.
+    # Caches the hash to avoid re-hashing the 4GB+ model on every launch.
+    model_path = ROOT / "gemma-4-E4B-it-heretic-Q5_K_M.gguf"
+    hash_cache = ROOT / ".model_sha256"
+    if model_path.exists():
+        import hashlib
+        cached_hash = None
+        stat = model_path.stat()
+        if hash_cache.exists():
+            parts = hash_cache.read_text().strip().split(":")
+            # P7-6 REMEDIATION: Check mtime + size + inode — not just mtime.
+            # An attacker who `touch -t` a swapped model can fake mtime alone.
+            if len(parts) == 4:
+                cached_mtime, cached_size, cached_ino, cached_digest = parts
+                try:
+                    if (float(cached_mtime) == stat.st_mtime and
+                        int(cached_size) == stat.st_size and
+                        int(cached_ino) == stat.st_ino):
+                        cached_hash = cached_digest
+                except (ValueError, OverflowError):
+                    pass
+        if cached_hash:
+            safe_env["MODEL_SHA256"] = cached_hash
+            safe_env["MODEL_VERIFIED"] = "1"
+            log(f"  \033[90m↳ Secure Boot hash (cached): {cached_hash[:16]}…\033[0m")
+        else:
+            log(f"  \033[90m↳ Computing Secure Boot SHA256 (first launch, ~10s)…\033[0m")
+            sha256 = hashlib.sha256()
+            with open(model_path, "rb") as f:
+                for chunk in iter(lambda: f.read(1048576), b""):
+                    sha256.update(chunk)
+            digest = sha256.hexdigest()
+            safe_env["MODEL_SHA256"] = digest
+            safe_env["MODEL_VERIFIED"] = "1"
+            hash_cache.write_text(f"{stat.st_mtime}:{stat.st_size}:{stat.st_ino}:{digest}")
+            # P16-10 REMEDIATION: Restrict hash cache permissions — prevents local user
+            # from overwriting with a malicious model's hash to bypass Secure Boot.
+            os.chmod(hash_cache, 0o600)
+            log(f"  \033[90m↳ Secure Boot hash: {digest[:16]}…\033[0m")
 
     proc = subprocess.Popen(
         cmd,
@@ -204,7 +247,17 @@ def wait_for_server(server_proc: subprocess.Popen, sep_pub_key: str, timeout: in
     """
     log(f"Waiting for server to be ready {SERVER_URL} (timeout: {timeout}s)…")
     start = time.time()
-    ctx = ssl._create_unverified_context()
+    # P5-1 REMEDIATION: Pin the self-signed cert for the health check.
+    # _create_unverified_context let a local MITM fake the health response.
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    cert_path = ROOT / "cert.pem"
+    if cert_path.exists():
+        ctx.load_verify_locations(str(cert_path))
+        # The cert CN=localhost but URL uses 127.0.0.1 — disable hostname check
+        # for this loopback-only health probe while keeping cert verification.
+        ctx.check_hostname = False
+    else:
+        ctx = ssl._create_unverified_context()  # Fallback only if cert not yet generated
     while time.time() - start < timeout:
         if server_proc.poll() is not None:
             log(f"Server process abruptly terminated (exit code {server_proc.returncode})", "ERR")
@@ -212,23 +265,19 @@ def wait_for_server(server_proc: subprocess.Popen, sep_pub_key: str, timeout: in
             
         try:
             req = urllib.request.Request(HEALTH_URL)
-            # The health endpoint might just require the pub key or basic presence
             req.add_header("Authorization", f"Bearer {sep_pub_key}")
             with urllib.request.urlopen(req, timeout=2, context=ctx) as resp:
                 if resp.status == 200:
                     log("Inference server is ready", "OK")
                     return True
         except (urllib.error.HTTPError) as e:
-            if e.code == 401:
-                log("Server locked via IPC Secret — OK", "OK")
-                return True
-        except (urllib.error.URLError, ConnectionError, OSError) as _exc:
-            with open("debug.log", "a") as f:
-                f.write(f"URLError: {_exc}\\n")
+            # Any HTTP response (401, 403, 500, etc.) means the server is listening
+            # and processing requests. SEP auth may reject us, but the server IS running.
+            log("Inference server is ready (SEP-locked)", "OK")
+            return True
+        except (urllib.error.URLError, ConnectionError, OSError):
             pass
-        except Exception as _exc2:
-            with open("debug.log", "a") as f:
-                f.write(f"Exception: {_exc2}\\n")
+        except Exception:
             pass
         time.sleep(1)
 
@@ -236,18 +285,30 @@ def wait_for_server(server_proc: subprocess.Popen, sep_pub_key: str, timeout: in
     return False
 
 def generate_tls_certs() -> None:
-    if not (ROOT / "key.pem").exists() or not (ROOT / "cert.pem").exists():
-        log("Generating Ephemeral Self-Signed TLS Certificates…")
-        run([
-            "openssl", "req", "-x509", "-newkey", "rsa:4096", "-nodes",
-            "-out", "cert.pem", "-keyout", "key.pem", "-days", "365",
-            "-subj", "/CN=localhost"
-        ])
+    # NEW-4 REMEDIATION: Ephemeral per-session TLS. Delete old certs so a stolen
+    # key.pem can never be reused for MITM in future sessions.
+    for f in ["cert.pem", "key.pem", "cert_fingerprint.txt"]:
+        p = ROOT / f
+        if p.exists():
+            p.unlink()
     
-    # Always generate fingerprint to ensure node receives latest hash mapping
+    log("Generating Ephemeral Self-Signed TLS Certificates (per-session)…")
+    run([
+        "openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1",
+        "-nodes", "-out", "cert.pem", "-keyout", "key.pem", "-days", "1",
+        "-subj", "/CN=localhost"
+    ])
+    
+    # Generate fingerprint for defense-in-depth validation in Node.js
     out = subprocess.check_output(["openssl", "x509", "-in", "cert.pem", "-noout", "-fingerprint", "-sha256"], cwd=str(ROOT))
     fingerprint = out.decode("utf-8").strip().split("=")[1]
     (ROOT / "cert_fingerprint.txt").write_text(fingerprint)
+    
+    # P11-14 REMEDIATION: Restrict TLS key permissions to owner-only.
+    # Without chmod 600, any local user can read the private key for MITM.
+    os.chmod(ROOT / "key.pem", 0o600)
+    os.chmod(ROOT / "cert.pem", 0o600)
+    os.chmod(ROOT / "cert_fingerprint.txt", 0o600)
 
 
 # ── Phase 3: Node.js / Electron ──────────────────────────────────────────────

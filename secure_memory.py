@@ -1,6 +1,6 @@
 import ctypes
-import json
-import logging
+# P17-10/P17-11 REMEDIATION: `json` and `logging` imports REMOVED.
+# `logging` was particularly dangerous — accidental use would send vault data to global log handlers.
 
 libc = ctypes.CDLL(None)
 
@@ -14,11 +14,9 @@ class SecureMemoryVault:
 
     def _mlock(self, buf: bytearray):
         addr = ctypes.addressof(ctypes.c_char.from_buffer(buf))
-        res = libc.mlock(ctypes.c_void_p(addr), len(buf))
-        if res != 0:
-            logging.error(f"[Secure Memory] mlock failed: {res}")
-        else:
-            print(f"[Secure Memory] Pinned buffer {len(buf)} bytes to RAM.")
+        # P7-1/P7-2 REMEDIATION: Silent operation. The old print() revealed buffer sizes
+        # (conversation length) and logging.error could be captured by handlers.
+        libc.mlock(ctypes.c_void_p(addr), len(buf))
 
     def get_history(self, conv_id: str) -> list[dict]:
         """ Parses physical RAM block sequence into Python structs transiently """
@@ -30,18 +28,29 @@ class SecureMemoryVault:
         offset = 0
         length = len(buf)
         
-        while offset < length:
-            role_len = int.from_bytes(buf[offset:offset+4], 'big')
-            offset += 4
-            role = buf[offset:offset+role_len].decode('utf-8')
-            offset += role_len
-            
-            content_len = int.from_bytes(buf[offset:offset+4], 'big')
-            offset += 4
-            content = buf[offset:offset+content_len].decode('utf-8')
-            offset += content_len
-            
-            messages.append({"role": role, "content": content})
+        try:
+            while offset < length:
+                if offset + 4 > length:
+                    break
+                role_len = int.from_bytes(buf[offset:offset+4], 'big')
+                offset += 4
+                if role_len > length - offset or role_len > 1024:
+                    break  # Corrupted buffer — abort parse
+                role = buf[offset:offset+role_len].decode('utf-8')
+                offset += role_len
+                
+                if offset + 4 > length:
+                    break
+                content_len = int.from_bytes(buf[offset:offset+4], 'big')
+                offset += 4
+                if content_len > length - offset:
+                    break  # Corrupted buffer — abort parse
+                content = buf[offset:offset+content_len].decode('utf-8')
+                offset += content_len
+                
+                messages.append({"role": role, "content": content})
+        except (ValueError, UnicodeDecodeError):
+            pass  # Graceful degradation on corrupted vault data
             
         return messages
 
@@ -120,5 +129,18 @@ class SecureMemoryVault:
         else:
             self._mlock(block)
             self.buffers[conv_id] = block
+
+    # P8-13 REMEDIATION: Secure conversation deletion.
+    # Without this, ALL history persists for the entire process lifetime.
+    def delete_conversation(self, conv_id: str):
+        """Securely wipe and remove a single conversation buffer."""
+        buf = self.buffers.pop(conv_id, None)
+        if buf and len(buf) > 0:
+            ctypes.memset(ctypes.addressof((ctypes.c_char * len(buf)).from_buffer(buf)), 0, len(buf))
+
+    def wipe_all(self):
+        """Securely wipe ALL conversation buffers — used on purge."""
+        for cid in list(self.buffers.keys()):
+            self.delete_conversation(cid)
 
 vault = SecureMemoryVault()

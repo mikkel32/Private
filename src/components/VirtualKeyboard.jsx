@@ -17,25 +17,11 @@ const PREALLOCATED_KEYS = STANDARD_KEYS.map(k => ({
 }));
 const STATIC_SPACE_BUF = PRECOMPUTED_ENCODER.encode(" ");
 
-let sab = null;
-let sabView = null;
-try {
-    if (typeof SharedArrayBuffer !== 'undefined') {
-        sab = new SharedArrayBuffer(8192);
-        sabView = new DataView(sab);
-        if (window.electronAPI) window.electronAPI.initSAB(sab);
-    }
-} catch (e) {
-    console.warn("SAB Initialization failed, falling back to basic IPC");
-}
-
+// DEEP-7 REMEDIATION: SharedArrayBuffer path removed — it was non-functional dead code
+// (no matching IPC handler in main.js) with a latent race condition.
+// All virtual keyboard keys route through the proven appendBuffer IPC channel.
 const sendToC = (buffer) => {
-    if (sabView) {
-        sabView.setUint32(0, buffer.length, false);
-        for(let i=0; i<buffer.length; i++) {
-            sabView.setUint8(4 + i, buffer[i]);
-        }
-    } else if (window.electronAPI) {
+    if (window.electronAPI) {
         window.electronAPI.appendBuffer(buffer);
     }
 };

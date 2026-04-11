@@ -6,9 +6,7 @@
     <true/>
     <key>com.apple.security.network.client</key>
     <true/>
-    <!-- In extreme paranoid setups we restrict files. For basic running, network client is required. -->
-    <!-- Extreme Memory Isolation: JIT and Unsigned Executable Memory Explicitly Removed -->
-    <key>com.apple.security.cs.disable-library-validation</key>
-    <true/>
+    <!-- Extreme Memory Isolation: JIT, Unsigned Executable Memory, and Library Injection Explicitly Removed -->
+    <!-- P9-11 REMEDIATION: disable-library-validation REMOVED — it allowed unsigned dylib injection -->
   </dict>
 </plist>

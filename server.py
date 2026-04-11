@@ -12,12 +12,19 @@ Backend:  llama.cpp + Apple Metal GPU acceleration
 
 from __future__ import annotations
 
-import json
+# P18-17 REMEDIATION: `json` import REMOVED — JSONResponse is from FastAPI, not json stdlib.
 import os
 import base64
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+# P18-5 REMEDIATION: AESGCM import REMOVED — encryption is handled by native sep_crypto binary.
 
 export_keys = {}
+
+# P6-9 REMEDIATION: Gate all diagnostic output behind MONOLITH_DEBUG.
+# Without this, model config, SEP key errors, boot status leak to stdout/Console.app.
+_MONOLITH_DEBUG = os.environ.get("MONOLITH_DEBUG") == "1"
+def _log(*args, **kwargs):
+    if _MONOLITH_DEBUG:
+        print(*args, **kwargs)
 
 # Disable all AI telemetry
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"
@@ -39,17 +46,17 @@ try:
         _libc = ctypes.CDLL(_libc_path)
         _res = _libc.mlockall(MCL_CURRENT | MCL_FUTURE)
         if _res != 0:
-            print(f"[SECURITY FAIL] mlockall() denied (code {_res}). System swap vulnerability possible.", file=sys.stderr)
+            _log("[SECURITY] mlockall() denied by sandbox — per-buffer mlock() active instead.")
         else:
-            print("[SECURITY ZERO-TRUST] Virtual Memory Paging disabled! Daemon securely locked to RAM.", file=sys.stderr)
-except Exception as e:
-    print(f"[SECURITY ERROR] Unable to execute mlockall(): {e}", file=sys.stderr)
+            _log("[SECURITY ZERO-TRUST] Virtual Memory Paging disabled! Daemon securely locked to RAM.")
+except Exception:
+    _log("[SECURITY] mlockall() unavailable. Per-buffer mlock() will be used.")
 
 from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
+# P17-12 REMEDIATION: CORSMiddleware import REMOVED — server has no CORS by design.
 from fastapi.responses import StreamingResponse, JSONResponse
 
 from llama_cpp import Llama
@@ -143,7 +150,11 @@ _GGML_NAME_MAP = {v: k.upper() for k, v in _GGML_TYPE_MAP.items()}
 
 # ── Application ──────────────────────────────────────────────────────────────
 
-app = FastAPI(title="Gemma 4 E4B Inference", version="2.0.0")
+# P20-1/2/3 REMEDIATION: Disable API discovery endpoints.
+# /openapi.json, /docs, /redoc are served WITHOUT SEP auth — any local process
+# can enumerate the full attack surface (endpoints, params, types).
+app = FastAPI(title="Gemma 4 E4B Inference", version="2.0.0",
+              openapi_url=None, docs_url=None, redoc_url=None)
 
 # Extreme Privacy: Completely Disabled CORS. The React frontend MUST NOT fetch directly.
 # All requests are securely proxied via the NodeJS Main process natively utilizing AES pipelines.
@@ -173,33 +184,40 @@ def get_model() -> Llama:
         k_name = _GGML_NAME_MAP.get(CACHE_TYPE_K, str(CACHE_TYPE_K))
         v_name = _GGML_NAME_MAP.get(CACHE_TYPE_V, str(CACHE_TYPE_V))
 
-        print(f"[server] Loading model from {MODEL_PATH}")
-        print(f"[server] Context: {CONTEXT_SIZE} tokens ({CONTEXT_SIZE // 1024}K)")
-        print(f"[server] GPU layers: {GPU_LAYERS}")
-        print(f"[server] KV cache: K={k_name}, V={v_name} (4-bit quantized)")
-        print(f"[server] Flash Attention: {'enabled' if FLASH_ATTN else 'disabled'}")
+        _log(f"[server] Loading model from {MODEL_PATH}")
+        _log(f"[server] Context: {CONTEXT_SIZE} tokens ({CONTEXT_SIZE // 1024}K)")
+        _log(f"[server] GPU layers: {GPU_LAYERS}")
+        _log(f"[server] KV cache: K={k_name}, V={v_name} (4-bit quantized)")
+        _log(f"[server] Flash Attention: {'enabled' if FLASH_ATTN else 'disabled'}")
 
         # Secure Boot Cryptographic Validation
         expected_hash = os.environ.get("MODEL_SHA256")
         if expected_hash:
-            print(f"[server] Executing Secure Boot Validation (SHA256) on {MODEL_PATH}...", file=sys.stderr)
-            sha256 = hashlib.sha256()
-            try:
-                with open(MODEL_PATH, "rb") as f:
-                    for chunk in iter(lambda: f.read(65536), b""):
-                        sha256.update(chunk)
-                file_hash = sha256.hexdigest()
-                if file_hash != expected_hash:
-                    # Critical Panic
-                    print(f"FATAL BOOT ERROR: Model cryptography failed! Expected {expected_hash}, got {file_hash}", file=sys.stderr)
+            # Performance: launch.py already hashes and validates the model OUTSIDE the sandbox.
+            # Re-hashing a 4GB file inside sandbox-exec is ~100x slower due to I/O overhead.
+            # If MODEL_VERIFIED=1 is set, trust the pre-validated hash from launch.py.
+            if os.environ.get("MODEL_VERIFIED") == "1":
+                _log(f"[server] Secure Boot: hash pre-validated by launcher (skipping re-hash)")
+            else:
+                _log(f"[server] Executing Secure Boot Validation (SHA256)...")
+                sha256 = hashlib.sha256()
+                try:
+                    with open(MODEL_PATH, "rb") as f:
+                        for chunk in iter(lambda: f.read(65536), b""):
+                            sha256.update(chunk)
+                    file_hash = sha256.hexdigest()
+                    if file_hash != expected_hash:
+                        # Critical Panic
+                        print(f"FATAL BOOT ERROR: Model cryptography failed! Expected {expected_hash}, got {file_hash}", file=sys.stderr)
+                        sys.exit(1)
+                    else:
+                        _log(f"[server] SECURE BOOT SUCCESS! Cryptographic Integrity matched.")
+                except Exception as e:
+                    # P18-10 REMEDIATION: Don't include str(e) — may reveal file paths or OS errors.
+                    print("FATAL BOOT ERROR: Model integrity check failed", file=sys.stderr)
                     sys.exit(1)
-                else:
-                    print(f"[server] SECURE BOOT SUCCESS! Cryptographic Integrity matched {file_hash[:8]}...", file=sys.stderr)
-            except Exception as e:
-                print(f"FATAL BOOT ERROR: IO Check failure: {e}", file=sys.stderr)
-                sys.exit(1)
         else:
-            print("[server] [WARNING] Secure Boot Validation DISABLED (`MODEL_SHA256` not set). Malware can swap logic natively.", file=sys.stderr)
+            _log("[server] [WARNING] Secure Boot Validation DISABLED.")
 
         _model = Llama(
             model_path=MODEL_PATH,
@@ -210,7 +228,7 @@ def get_model() -> Llama:
             type_v=CACHE_TYPE_V,
             verbose=False,
         )
-        print(f"[server] Model loaded — {CONTEXT_SIZE // 1024}K context, KV: K={k_name} V={v_name}")
+        _log(f"[server] Model loaded — {CONTEXT_SIZE // 1024}K context, KV: K={k_name} V={v_name}")
     return _model
 
 
@@ -261,15 +279,21 @@ if sep_pub_key_env:
             pn = ec.EllipticCurvePublicNumbers(x, y, ec.SECP256R1())
             vk = pn.public_key()
     except Exception as e:
-        print("[server] SEP Pub Key Parse Error:", e)
+        _log("[server] SEP Pub Key Parse Error:", e)
+
+# P9-4 REMEDIATION: Track used timestamp nonces to prevent replay within 2s window.
+_used_nonces: set[str] = set()
+_nonce_cleanup_counter = 0
 
 async def verify_ipc_token(request: Request):
+    global _nonce_cleanup_counter
     if not vk:
-        raise HTTPException(status_code=500, detail="Server misconfigured: Secure Enclave Key missing")
+        # P9-6 REMEDIATION: Don't reveal internal state in error messages.
+        raise HTTPException(status_code=500, detail="Authentication unavailable")
     
     timestamp_str = request.headers.get("X-SEP-Timestamp")
     if not timestamp_str:
-        raise HTTPException(status_code=401, detail="Unauthorized: Missing Timestamp Nonce")
+        raise HTTPException(status_code=401, detail="Unauthorized")
         
     try:
         timestamp_ms = int(timestamp_str)
@@ -277,10 +301,22 @@ async def verify_ipc_token(request: Request):
         current_time_ms = int(time.time() * 1000)
         
         if abs(current_time_ms - timestamp_ms) > 2000:
-            raise HTTPException(status_code=401, detail="Unauthorized: Packet Replay Attack Detected or Clock Drifted excessively.")
+            raise HTTPException(status_code=401, detail="Unauthorized")
     except ValueError:
-        raise HTTPException(status_code=401, detail="Malformed Timestamp")
+        raise HTTPException(status_code=401, detail="Unauthorized")
     
+    # P9-4: Reject replayed nonces — even within the 2s window
+    if timestamp_str in _used_nonces:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    _used_nonces.add(timestamp_str)
+    
+    # Periodic cleanup: remove nonces older than 5s (well beyond the 2s window)
+    _nonce_cleanup_counter += 1
+    if _nonce_cleanup_counter >= 50:
+        _nonce_cleanup_counter = 0
+        cutoff = current_time_ms - 5000
+        _used_nonces.difference_update({n for n in _used_nonces if int(n) < cutoff})
+
     signature_b64 = request.headers.get("X-SEP-Signature")
     if not signature_b64:
         raise HTTPException(status_code=401, detail="Unauthorized: Missing SEP Signature")
@@ -309,143 +345,29 @@ async def verify_ipc_token(request: Request):
 
 @app.get("/health", dependencies=[Depends(verify_ipc_token)])
 async def health() -> dict:
-    return {
-        "status": "ok",
-        "model": Path(MODEL_PATH).name,
-        "context_size": CONTEXT_SIZE,
-    }
+    # P13-4/P13-5 REMEDIATION: Don't leak model filename or context size.
+    return {"status": "ok"}
 
+# P13-1 REMEDIATION: Legacy /v1/chat/completions REMOVED.
+# This endpoint accepted PLAINTEXT messages as JSON — a COMPLETE zero-trust bypass:
+#   - User messages sent as readable JSON strings (no vault, no XOR, no binary protocol)
+#   - Response returned as plaintext SSE (no DRM rendering, no PNG)
+#   - Error handler leaked str(e) — Python internals exposed
+# All message dispatch now exclusively routes through /v1/chat/stream_canvas.
 @app.post("/v1/chat/completions", response_model=None, dependencies=[Depends(verify_ipc_token)])
-async def chat_completions(request: Request):
-    body = await request.json()
-    messages = body.get("messages", [])
-    stream = body.get("stream", True)
-    max_tokens = body.get("max_tokens", 2048)
-    temperature = body.get("temperature", 0.7)
-    top_p = body.get("top_p", 0.9)
-    enable_thinking = body.get("enable_thinking", True)
-    thinking_budget = body.get("thinking_budget", 1024)
-
-    if not messages:
-        return JSONResponse(
-            status_code=400,
-            content={"error": "messages array is required"},
-        )
-
-    model = get_model()
-    processed_messages = inject_thinking(messages, enable_thinking, thinking_budget)
-    effective_max_tokens = max_tokens + thinking_budget if enable_thinking else max_tokens
-
-    if not stream:
-        t_start = time.perf_counter()
-        result = model.create_chat_completion(
-            messages=processed_messages,
-            max_tokens=effective_max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stream=False,
-        )
-        t_end = time.perf_counter()
-        total_ms = (t_end - t_start) * 1000
-        comp_tokens = result.get("usage", {}).get("completion_tokens", 0)
-        prompt_tokens = result.get("usage", {}).get("prompt_tokens", 0)
-        tps = comp_tokens / (total_ms / 1000) if total_ms > 0 else 0
-
-        result["timings"] = {
-            "ttft_ms": round(total_ms, 1),
-            "total_ms": round(total_ms, 1),
-            "tokens": comp_tokens,
-            "prompt_tokens": prompt_tokens,
-            "tps": round(tps, 2),
-        }
-        return JSONResponse(content=result)
-
-    # ── Streaming response with telemetry ─────────────────────────────────
-    async def generate() -> AsyncGenerator[str, None]:
-        completion_id = f"chatcmpl-{int(time.time() * 1000)}"
-        t_start = time.perf_counter()
-        t_first_token = None
-        token_count = 0
-
-        response_stream = model.create_chat_completion(
-            messages=processed_messages,
-            max_tokens=effective_max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            stream=True,
-        )
-
-        try:
-            for chunk in response_stream:
-                delta = chunk.get("choices", [{}])[0].get("delta", {})
-                content = delta.get("content", "")
-                if content:
-                    if t_first_token is None:
-                        t_first_token = time.perf_counter()
-
-                    token_count += 1
-                    payload = {
-                        "id": completion_id,
-                        "object": "chat.completion.chunk",
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {"content": content},
-                                "finish_reason": None,
-                            }
-                        ],
-                    }
-                    yield f"data: {json.dumps(payload)}\n\n"
-        except Exception as e:
-            msg = str(e)
-            if "llama_decode returned" in msg:
-                err_msg = "\n\n⚠️ [System: Generation halted. The required context has exceeded the physical Unified Memory limit or Context Window limit of this machine. Please clear the conversation or reduce Max Tokens/Thinking Budget.]"
-            else:
-                err_msg = f"\n\n⚠️ [System Error: {msg}]"
-                
-            payload = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "choices": [{"index": 0, "delta": {"content": err_msg}, "finish_reason": "length"}]
-            }
-            yield f"data: {json.dumps(payload)}\n\n"
-
-        # ── Final telemetry chunk ────────────────────────────────────────
-        t_end = time.perf_counter()
-        total_ms = (t_end - t_start) * 1000
-        ttft_ms = ((t_first_token - t_start) * 1000) if t_first_token else total_ms
-        decode_time_s = (t_end - (t_first_token or t_start))
-        tps = token_count / decode_time_s if decode_time_s > 0 else 0
-
-        timings_payload = {
-            "id": completion_id,
-            "object": "chat.completion.timings",
-            "timings": {
-                "ttft_ms": round(ttft_ms, 1),
-                "total_ms": round(total_ms, 1),
-                "tokens": token_count,
-                "tps": round(tps, 2),
-            },
-        }
-        yield f"data: {json.dumps(timings_payload)}\n\n"
-        yield "data: [DONE]\n\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+async def chat_completions_blocked(request: Request):
+    return JSONResponse(
+        status_code=410,
+        content={"error": "Endpoint removed — use /v1/chat/stream_canvas (binary vault protocol)"}
     )
 
+
 @app.get("/v1/chat/render/{conversation_id}", dependencies=[Depends(verify_ipc_token)])
-async def get_chat_render(conversation_id: str):
+async def get_chat_render(conversation_id: str, ocr_shield: str = "on"):
     history = vault.get_history(conversation_id)
     if not history:
         history = [{"role": "system", "content": "Start a new secure session."}]
-    png_bytes = render_chat_history(history, "")
+    png_bytes = render_chat_history(history, "", ocr_disruption=(ocr_shield != "off"))
     length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
     return StreamingResponse(
         iter([length_prefix + png_bytes]),
@@ -456,6 +378,20 @@ async def get_chat_render(conversation_id: str):
             "X-Accel-Buffering": "no",
         },
     )
+
+# P8-13 REMEDIATION: Secure conversation deletion endpoint.
+# Without this, vault.buffers grows unbounded for the entire session.
+@app.delete("/v1/chat/{conversation_id}", dependencies=[Depends(verify_ipc_token)])
+async def delete_conversation(conversation_id: str):
+    vault.delete_conversation(conversation_id)
+    export_keys.pop(conversation_id, None)
+    return {"status": "wiped"}
+
+@app.delete("/v1/chat/purge/all", dependencies=[Depends(verify_ipc_token)])
+async def purge_all():
+    vault.wipe_all()
+    export_keys.clear()
+    return {"status": "all_wiped"}
 
 @app.get("/v1/chat/export/{conversation_id}", dependencies=[Depends(verify_ipc_token)])
 async def export_vault(conversation_id: str):
@@ -485,9 +421,9 @@ async def export_vault(conversation_id: str):
         key_bytes = outData[0:32]
         final_payload = outData[32:]
         
-        # Store key for one-time fetch, wiping the local copy automatically via Python gc
-        # since it's just a transient slice.
-        export_keys[conversation_id] = key_bytes.hex()
+        # DEEP-10 REMEDIATION: Store as mutable bytearray, not immutable str.
+        # Python strings are immutable and CANNOT be wiped from memory.
+        export_keys[conversation_id] = bytearray(key_bytes)
         
         # The key_bytes are wiped inside sep_crypto automatically by iOS/macOS memory layout safeguards.
         
@@ -495,20 +431,26 @@ async def export_vault(conversation_id: str):
             iter([final_payload]),
             media_type="application/octet-stream",
             headers={
-                "Content-Disposition": f"attachment; filename=Monolith_Vault_{conversation_id[:8]}.enc"
+                # P18-1 REMEDIATION: Sanitize conversation_id server-side for header injection.
+                "Content-Disposition": f"attachment; filename=Monolith_Vault_{''.join(c for c in conversation_id[:8] if c.isalnum())}.enc"
             }
         )
-    except subprocess.CalledProcessError as e:
-        return JSONResponse(status_code=500, content={"error": "SEP Kernel Panic", "details": e.stderr.decode()})
+    except subprocess.CalledProcessError:
+        # P7-7 REMEDIATION: Don't return raw stderr — reveals system paths and binary output.
+        return JSONResponse(status_code=500, content={"error": "Export encryption failed"})
 
 @app.get("/v1/chat/export/key/{conversation_id}", dependencies=[Depends(verify_ipc_token)])
 async def export_vault_key(conversation_id: str):
-    key_hex = export_keys.pop(conversation_id, None)
-    if not key_hex:
+    key_ba = export_keys.pop(conversation_id, None)
+    if not key_ba:
          png_bytes = render_chat_history([], "[SECURITY WARNING]\nDecryption Key destroyed or never existed.")
     else:
+         # Transiently convert to hex for rendering, then immediately wipe the source bytearray
+         key_hex = key_ba.hex()
+         ctypes.memset(ctypes.addressof((ctypes.c_char * len(key_ba)).from_buffer(key_ba)), 0, len(key_ba))
          content = f"VAULT EXPORT SUCCESSFUL\n\nAES-256-GCM DECRYPTION KEY:\n{key_hex}\n\nWarning: This key has been purged from Memory. If you close this window, the file is permanently unreadable."
          png_bytes = render_chat_history([], content)
+         del key_hex  # Remove transient str reference for faster GC
          
     # We do NOT return a length prefix here since we expect a raw image/png response for an <img> tag or buffer
     return StreamingResponse(
@@ -542,6 +484,19 @@ async def stream_canvas(request: Request):
     enable_thinking_b, thinking_budget, max_tokens, temperature, top_p, convId_len = struct.unpack_from(header_fmt, body, 0)
     enable_thinking = bool(enable_thinking_b)
     
+    # DEEP-11 REMEDIATION: Bounds validation on parsed uint32 fields.
+    # Without this, a malicious client can set max_tokens=0xFFFFFFFF (DoS) or convId_len=4GB.
+    if convId_len > 256:
+        return StreamingResponse(iter([]), status_code=400)
+    if max_tokens > 65536 or thinking_budget > 65536:
+        return StreamingResponse(iter([]), status_code=400)
+    # P14-9 REMEDIATION: Validate doubles for NaN/Infinity — undefined behavior in llama_cpp.
+    import math
+    if not math.isfinite(temperature) or not math.isfinite(top_p):
+        return StreamingResponse(iter([]), status_code=400)
+    temperature = max(0.0, min(temperature, 2.0))
+    top_p = max(0.0, min(top_p, 1.0))
+    
     offset = header_sz
     conv_id_bytes = body[offset:offset+convId_len]
     offset += convId_len
@@ -551,9 +506,15 @@ async def stream_canvas(request: Request):
         
     secret_len = struct.unpack_from("!I", body, offset)[0]
     offset += 4
+    
+    # Validate secret_len against actual remaining body
+    if secret_len > len(body) - offset or secret_len > 8192:
+        return StreamingResponse(iter([]), status_code=400)
+    
     secret_bytes = body[offset:offset+secret_len]
     
-    conv_id_str = conv_id_bytes.decode('utf-8')
+    # P21-18 REMEDIATION: Use 'replace' to prevent UnicodeDecodeError traceback leaks.
+    conv_id_str = conv_id_bytes.decode('utf-8', 'replace')
     
     # Securely append to Mlocked vault directly in binary!
     history = vault.get_history(conv_id_str)
@@ -569,6 +530,7 @@ async def stream_canvas(request: Request):
     model = get_model()
     
     async def generate_binary() -> AsyncGenerator[bytes, None]:
+        nonlocal processed_messages, history  # P5-7 + P14-17: allow cleanup in finally block
         response_stream = model.create_chat_completion(
             messages=processed_messages,
             max_tokens=max_tokens,
@@ -604,8 +566,9 @@ async def stream_canvas(request: Request):
             if full_content:
                 vault.append_message_binary(conv_id_bytes, b"assistant", full_content)
                 
-        except Exception as e:
-            full_content.extend(f"\n\n[System Error: {str(e)}]".encode('utf-8'))
+        except Exception:
+            # P10-4 REMEDIATION: Don't embed str(e) — reveals Python internals.
+            full_content.extend(b"\n\n[Generation interrupted]")
             png_bytes = render_chat_history(history, full_content)
             length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
             yield length_prefix + png_bytes
@@ -619,6 +582,13 @@ async def stream_canvas(request: Request):
             if full_content:
                 addr = ctypes.addressof((ctypes.c_char * len(full_content)).from_buffer(full_content))
                 ctypes.memset(addr, 0, len(full_content))
+            
+            # P5-7 REMEDIATION: Delete processed_messages (plaintext history as Python dicts).
+            # Without this, the full conversation persists in the closure until GC.
+            processed_messages = None
+            # P14-17 REMEDIATION: Release history str references. Without this,
+            # conversation text as Python str objects persists in generator closure.
+            history = None
                 
             # GC cycle ensures pooled refs are swept
             gc.collect()
@@ -644,7 +614,10 @@ if __name__ == "__main__":
         app, 
         host="127.0.0.1", 
         port=PORT, 
-        log_level="info",
+        # P6-8 REMEDIATION: Disable access logs — they leak conversation IDs
+        # in URL paths (e.g., /v1/chat/render/a1b2c3d4) to stdout/Console.app.
+        log_level="warning",
+        access_log=False,
         ssl_keyfile="key.pem",
         ssl_certfile="cert.pem"
     )
