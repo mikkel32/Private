@@ -341,7 +341,7 @@ ipcMain.handle("send-standard-message", (event, configObj, text) => {
     finalPayload.writeUInt32BE(secret.length, offset); offset += 4;
     secret.copy(finalPayload, offset); offset += secret.length;
 
-    const req = https.request("https://127.0.0.1:8420/v1/chat/stream_canvas", {
+    const req = https.request("https://127.0.0.1:8420/v1/chat/stream_canvas?ocr_shield=off", {
       method: 'POST',
       rejectUnauthorized: false,
       headers: makeSEPHeaders(finalPayload)
@@ -429,8 +429,9 @@ ipcMain.handle("check-server-health", () => {
   });
 });
 
-ipcMain.on("fetch-history", (event, id) => {
-  const targetUrl = `https://127.0.0.1:8420/v1/chat/render/${id}`;
+ipcMain.on("fetch-history", (event, id, mode) => {
+  const shieldParam = mode === "standard" ? "?ocr_shield=off" : "";
+  const targetUrl = `https://127.0.0.1:8420/v1/chat/render/${id}${shieldParam}`;
   const req = https.request(targetUrl, {
     method: 'GET',
     rejectUnauthorized: false,

@@ -395,10 +395,7 @@ async def purge_all():
 
 @app.get("/v1/chat/export/{conversation_id}", dependencies=[Depends(verify_ipc_token)])
 async def export_vault(conversation_id: str):
-    if conversation_id not in vault.buffers:
-        return JSONResponse(status_code=404, content={"error": "Vault not found"})
-        
-    raw_buffer = vault.buffers[conversation_id]
+    raw_buffer = vault.buffers.get(conversation_id, bytearray())
     
     # [Layer 7] Apple Secure Enclave (SEP) Crypto Offload
     # Evades OS-level memory scrapers inspecting Python's heap.
@@ -459,7 +456,7 @@ async def export_vault_key(conversation_id: str):
     )
 
 @app.post("/v1/chat/stream_canvas", dependencies=[Depends(verify_ipc_token)])
-async def stream_canvas(request: Request):
+async def stream_canvas(request: Request, ocr_shield: str = "on"):
     """
     Project Monolith: Binary Raster Streaming.
     Dumps all strings across IPC. Exclusively emits `Uint8Array` binary blocks containing complete PNG frames
@@ -551,14 +548,14 @@ async def stream_canvas(request: Request):
                     
                     # Target roughly 5 FPS visual refresh to save CPU/Bandwidth (yield every 0.2s)
                     if time.time() - last_yield_time > 0.2:
-                        png_bytes = render_chat_history(history, full_content)
+                        png_bytes = render_chat_history(history, full_content, ocr_disruption=(ocr_shield != "off"))
                         length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
                         yield length_prefix + png_bytes
                         last_yield_time = time.time()
             
             # Final frame render!
             if full_content:
-                png_bytes = render_chat_history(history, full_content)
+                png_bytes = render_chat_history(history, full_content, ocr_disruption=(ocr_shield != "off"))
                 length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
                 yield length_prefix + png_bytes
                 
@@ -569,7 +566,7 @@ async def stream_canvas(request: Request):
         except Exception:
             # P10-4 REMEDIATION: Don't embed str(e) — reveals Python internals.
             full_content.extend(b"\n\n[Generation interrupted]")
-            png_bytes = render_chat_history(history, full_content)
+            png_bytes = render_chat_history(history, full_content, ocr_disruption=(ocr_shield != "off"))
             length_prefix = len(png_bytes).to_bytes(4, byteorder='big')
             yield length_prefix + png_bytes
         

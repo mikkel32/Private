@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setSecureLayerVisibility: (visible) => ipcRenderer.send("secure-layer-visibility", visible),
   // Protocol Omega: Network Dispatch
   secureNetworkDispatch: (configObj) => ipcRenderer.send("secure-network-dispatch", configObj),
+  sendStandardMessage: (configObj, text) => ipcRenderer.invoke("send-standard-message", configObj, text),
   fetchHistory: (id, mode) => ipcRenderer.send("fetch-history", id, mode),
   checkServerHealth: () => ipcRenderer.invoke("check-server-health"),
   exportVault: (id) => ipcRenderer.send("export-vault", id),

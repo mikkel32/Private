@@ -697,13 +697,31 @@ Napi::Value RenderDRMFrame(const Napi::CallbackInfo& info) {
             (id)kCVPixelBufferCGImageCompatibilityKey: @YES,
             (id)kCVPixelBufferCGBitmapContextCompatibilityKey: @YES
         };
-        CVReturn status = CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32ARGB, (__bridge CFDictionaryRef)options, &pixelBuffer);
         
+        size_t bytesPerRow = width * 4;
+        size_t bufSize = bytesPerRow * height;
+        // P23-9 & P11-1 REMEDIATION: Allocate secure memory and zero it ONLY when CoreVideo releases it natively.
+        // This prevents the compositor from drawing a blank frame because memory was wiped before next VSync.
+        void *pxdata = mmap(NULL, bufSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        if (pxdata != MAP_FAILED) {
+            mlock(pxdata, bufSize);
+            
+            CVPixelBufferReleaseBytesCallback releaseCallback = [](void *releaseRefCon, const void *baseAddress) {
+                size_t size = (size_t)releaseRefCon;
+                if (baseAddress && size > 0) {
+                    memset_s((void *)baseAddress, size, 0, size);
+                    munlock(baseAddress, size);
+                    munmap((void *)baseAddress, size);
+                }
+            };
+            
+            CVReturn status = CVPixelBufferCreateWithBytes(kCFAllocatorDefault, width, height, kCVPixelFormatType_32ARGB, pxdata, bytesPerRow, releaseCallback, (void*)bufSize, (__bridge CFDictionaryRef)options, &pixelBuffer);
+            
         if (status == kCVReturnSuccess && pixelBuffer) {
             CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-            void *pxdata = CVPixelBufferGetBaseAddress(pixelBuffer);
+            void *drawData = CVPixelBufferGetBaseAddress(pixelBuffer);
             CGColorSpaceRef rgbColorSpace = CGColorSpaceCreateDeviceRGB();
-            CGContextRef context = CGBitmapContextCreate(pxdata, width, height, 8, CVPixelBufferGetBytesPerRow(pixelBuffer), rgbColorSpace, kCGImageAlphaPremultipliedFirst);
+            CGContextRef context = CGBitmapContextCreate(drawData, width, height, 8, CVPixelBufferGetBytesPerRow(pixelBuffer), rgbColorSpace, kCGImageAlphaPremultipliedFirst);
             
             if (context) {
                 CGContextClearRect(context, CGRectMake(0, 0, width, height));
@@ -732,7 +750,6 @@ Napi::Value RenderDRMFrame(const Napi::CallbackInfo& info) {
                     }
                     [globalDrmLayer enqueueSampleBuffer:sampleBuffer];
                     
-                    // Diagnostic: check layer state after enqueue
                     MONOLITH_LOG(@"[DRM-NATIVE] Enqueued frame %zux%zu. LayerStatus=%ld opacity=%.1f maskFrame=(%g,%g,%g,%g) drmFrame=(%g,%g,%g,%g)",
                         width, height,
                         (long)[globalDrmLayer status],
@@ -747,19 +764,9 @@ Napi::Value RenderDRMFrame(const Napi::CallbackInfo& info) {
                 if (formatDescription) CFRelease(formatDescription);
             }
             CGColorSpaceRelease(rgbColorSpace);
-            // P23-9 REMEDIATION: Unlock after draw phase BEFORE re-locking for zero phase.
-            // Double-lock without unlock is undefined behavior on some GPU drivers.
-            CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
-            // P11-1 REMEDIATION: Zero ARGB pixels before release.
-            // Without this, conversation text pixels persist in IOSurface memory.
-            CVPixelBufferLockBaseAddress(pixelBuffer, 0);
-            void *baseAddr = CVPixelBufferGetBaseAddress(pixelBuffer);
-            size_t bufSize = CVPixelBufferGetBytesPerRow(pixelBuffer) * CVPixelBufferGetHeight(pixelBuffer);
-            if (baseAddr && bufSize > 0) {
-                memset_s(baseAddr, bufSize, 0, bufSize);
-            }
             CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
             CVPixelBufferRelease(pixelBuffer);
+        }
         }
         CGImageRelease(image);
     });

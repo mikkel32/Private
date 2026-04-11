@@ -81,7 +81,7 @@ export default function App() {
 
   useEffect(() => {
     if (serverOnline && activeId && !isStreaming) {
-       window.electronAPI.fetchHistory(activeId);
+       window.electronAPI.fetchHistory(activeId, settings.securityMode);
     }
   }, [activeId, serverOnline, isStreaming, settings.securityMode]);
 
